@@ -1,0 +1,1 @@
+docker service create --name prune-images --mode global --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock docker sh -c "while true; do docker image prune -af; sleep 86400; done"
