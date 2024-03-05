@@ -1,0 +1,14 @@
+version: '3'
+services:
+    echo:
+        image: mendhak/http-https-echo:31
+        environment:
+            - HTTP_PORT=8888
+            - HTTPS_PORT=9999
+        ports:
+            - "8080:8888"
+            - "8443:9999"
+    it-tools:
+        image: corentinth/it-tools:latest
+        ports:
+            - "8081:80"
