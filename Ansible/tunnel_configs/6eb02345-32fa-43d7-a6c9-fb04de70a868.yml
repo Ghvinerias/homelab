@@ -1,0 +1,10 @@
+tunnel: "6eb02345-32fa-43d7-a6c9-fb04de70a868" 
+clredentials-file: /root/.cloudflared/6eb02345-32fa-43d7-a6c9-fb04de70a868.json
+
+ingress:
+  - hostname: echo.slick.ge
+    service: http://localhost:8080
+  - hostname: ittools.slick.ge
+    service: http://localhost:8081
+    #noTLSVerify: true
+  - service: http_status:404
