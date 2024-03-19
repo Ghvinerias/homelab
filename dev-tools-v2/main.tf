@@ -9,8 +9,8 @@ terraform {
       source = "hashicorp/random"
     }
     proxmox = {
-      source  = "Telmate/proxmox"
-      version = "2.9.4"
+      source = "Telmate/proxmox"
+      version = "3.0.1-rc1"
     }
   }
 }
@@ -21,7 +21,7 @@ resource "random_password" "tunnel_secret" {
 # Creates a new locally-managed tunnel for the GCP VM.
 resource "cloudflare_tunnel" "auto_tunnel" {
   account_id = var.cloudflare_account_id
-  name       = "Terraform GCP tunnel"
+  name       = var.lxc_hostname
   secret     = base64sha256(random_password.tunnel_secret.result)
 }
 
@@ -50,6 +50,8 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
 }
 
 resource "proxmox_lxc" "advanced_features" {
+  bwlimit = 0
+  force = false
   target_node  = "pve"
   hostname     = var.lxc_hostname
   ostemplate   = "local:vztmpl/slick-ubuntu-22.04-docker.tar.gz"
@@ -75,7 +77,7 @@ resource "proxmox_lxc" "advanced_features" {
 
   network {
     name   = "eth0"
-    bridge = "vmbr420"
+    bridge = "vmbr0"
     ip     = "dhcp"
     tag    = "20"
   }
@@ -84,7 +86,7 @@ resource "proxmox_lxc" "advanced_features" {
     user     = "root"
     host     = var.lxc_hostname
     password = var.pm_token
-    //    private_key = file("/root/.ssh/id_rsa")
+    private_key = var.tf_cloud_ssh_private_key
   }
   provisioner "file" {
     source      = "docker-compose.tftpl"
