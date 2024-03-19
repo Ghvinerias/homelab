@@ -41,14 +41,13 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
   config {
     ingress_rule {
       hostname = cloudflare_record.http_app.hostname
-      service  = "http://httpbin:8080"
+      service  = "http://it-tools:8888"
     }
     ingress_rule {
       service = "http_status:404"
     }
   }
 }
-
 
 resource "proxmox_lxc" "advanced_features" {
   target_node  = "pve"
@@ -83,10 +82,20 @@ resource "proxmox_lxc" "advanced_features" {
   connection {
     type     = "ssh"
     user     = "root"
-    host     = "10.10.10.124"
+    host     = var.lxc_hostname
     password = var.pm_token
     //    private_key = file("/root/.ssh/id_rsa")
   }
+  provisioner "file" {
+    source      = "docker-compose.tftpl"
+    destination = "/root/docker-compose.yml"
+  }
+  provisioner "remote-exec" {
+    inline = [
+      "docker-compose up -d",
+    ]
+  }
+
 }
 
 
