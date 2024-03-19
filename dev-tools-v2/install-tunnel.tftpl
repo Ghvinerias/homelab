@@ -1,0 +1,16 @@
+cat > /tmp/docker-compose.yml << "EOF"
+version: '3'
+services:
+  httpbin:
+    image: kennethreitz/httpbin
+    restart: always
+    container_name: httpbin
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: always
+    container_name: cloudflared
+    command: tunnel run --token ${tunnel_token}
+EOF
+cd /tmp
+sudo docker-compose up -d
