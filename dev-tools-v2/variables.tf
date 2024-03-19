@@ -75,3 +75,8 @@ variable "pm_token" {
   description = "LXC Container Hostname"
   type        = string
 }
+variable "tf_cloud_ssh_private_key" {
+  type        = string
+  description = "(optional) Private SSH key defined as a workspace variable in terraform cloud"
+  default     = null
+}
