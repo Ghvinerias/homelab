@@ -79,7 +79,7 @@ resource "docker_container" "echo" {
   hostname = "echo"
   restart  = "unless-stopped"
   env = [
-    "HTTP_PORT=8888"
+    "HTTP_PORT=8880"
   ]
   networks_advanced {
     name = docker_network.private_network.id
@@ -103,7 +103,7 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
     }
     ingress_rule {
       hostname = cloudflare_record.echo.hostname
-      service  = "http://echo:8888"
+      service  = "http://echo:8880"
     }
     ingress_rule {
       service = "http_status:404"
