@@ -117,10 +117,10 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
 
 
 resource "docker_image" "jupyter" {
-  name = "jupyter/minimal-notebook"
+  name = "jupyter/scipy-notebook:2023-08-19"
 }
 resource "docker_container" "jupyter" {
-  image    = docker_image.echo.image_id
+  image    = docker_image.jupyter.image_id
   name     = "jupyter"
   hostname = "jupyter"
   restart  = "unless-stopped"
