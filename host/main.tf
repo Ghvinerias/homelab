@@ -5,6 +5,9 @@ terraform {
       source  = "Telmate/proxmox"
       version = "3.0.1-rc1"
     }
+    tfe = {
+      version = "~> 0.53.0"
+    }
   }
 }
 
