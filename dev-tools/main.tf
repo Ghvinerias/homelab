@@ -106,7 +106,32 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
       service  = "http://echo:8880"
     }
     ingress_rule {
+      hostname = cloudflare_record.echo.hostname
+      service  = "http://jupyter:8888 "
+    }
+    ingress_rule {
       service = "http_status:404"
     }
   }
+}
+
+
+resource "docker_image" "jupyter" {
+  name = "jupyter/minimal-notebook"
+}
+resource "docker_container" "jupyter" {
+  image    = docker_image.echo.image_id
+  name     = "jupyter"
+  hostname = "jupyter"
+  restart  = "unless-stopped"
+  networks_advanced {
+    name = docker_network.private_network.id
+  }
+}
+resource "cloudflare_record" "jupyter" {
+  zone_id = var.cloudflare_zone_id
+  name    = "jupyter"
+  value   = cloudflare_tunnel.auto_tunnel.cname
+  type    = "CNAME"
+  proxied = true
 }
