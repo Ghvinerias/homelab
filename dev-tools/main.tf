@@ -106,8 +106,8 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
       service  = "http://echo:8880"
     }
     ingress_rule {
-      hostname = cloudflare_record.echo.hostname
-      service  = "http://jupyter:8080 "
+      hostname = cloudflare_record.jupyter.hostname
+      service  = "http://jupyter:8888"
     }
     ingress_rule {
       service = "http_status:404"
