@@ -25,7 +25,7 @@ variable "lxc_hostname" {
 }
 variable "tf_cloud_ssh_private_key" {
   type        = string
-  description = "(optional) Private SSH key defined as a workspace variable in terraform cloud"
+  description = "(optional) Private SSH key defined as a workspace variable in Terraform cloud"
   default     = null
   sensitive   = true
 }
