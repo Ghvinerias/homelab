@@ -24,4 +24,10 @@ lxc_hosts = {
     lxc_cores     = 1
     lxc_disk_size = 10
   }
+
+  "LinuxAppB-03" = {
+    lxc_memory    = "512"
+    lxc_cores     = 1
+    lxc_disk_size = 10
+  }
 }
