@@ -71,7 +71,7 @@ resource "cloudflare_record" "ittools" {
 }
 
 resource "docker_image" "misho-valentine" {
-  name = "ghvinerias/misho-valentine:latest"
+  name = "ghvinerias/misho-valentine:dev"
 }
 resource "docker_container" "misho-valentine" {
   image    = docker_image.misho-valentine.image_id
