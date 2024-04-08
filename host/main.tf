@@ -5,25 +5,9 @@ terraform {
       source  = "Telmate/proxmox"
       version = "3.0.1-rc1"
     }
-    tfe = {
-      version = "~> 0.53.0"
-    }
-    hcp = {
-      source = "hashicorp/hcp"
-      version = "0.83.0"
-    }
   }
 }
-provider "hcp" {}
 
-
-data "hcp_vault_secrets_app" "home_lab" {
-  app_name = "Home-Lab"
-}
-data "hcp_vault_secrets_secret" "example" {
-  app_name    = "hcp_vault_secrets_app"
-  secret_name = "my_secret"
-}
 
 provider "proxmox" {
   pm_api_url      = data.hcp_vault_secrets_secret.my_secret
