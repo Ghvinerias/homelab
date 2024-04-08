@@ -8,9 +8,8 @@ terraform {
   }
 }
 
-
 provider "proxmox" {
-  pm_api_url      = data.hcp_vault_secrets_secret.my_secret
+  pm_api_url      = var.pm_api
   pm_user         = var.pm_user
   pm_password     = var.pm_token
   pm_tls_insecure = true
