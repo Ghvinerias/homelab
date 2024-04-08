@@ -69,27 +69,6 @@ resource "cloudflare_record" "ittools" {
   type    = "CNAME"
   proxied = true
 }
-
-resource "docker_image" "misho-valentine" {
-  name = "ghvinerias/misho-valentine:dev"
-}
-resource "docker_container" "misho-valentine" {
-  image    = docker_image.misho-valentine.image_id
-  name     = "misho-valentine"
-  hostname = "misho-valentine"
-  restart  = "unless-stopped"
-  networks_advanced {
-    name = docker_network.private_network.id
-  }
-}
-resource "cloudflare_record" "misho-valentine" {
-  zone_id = var.cloudflare_zone_id
-  name    = "misho-valentine"
-  value   = cloudflare_tunnel.auto_tunnel.cname
-  type    = "CNAME"
-  proxied = true
-}
-
 resource "docker_image" "echo" {
   name = "mendhak/http-https-echo:31"
 }
@@ -117,10 +96,6 @@ resource "cloudflare_tunnel_config" "auto_tunnel" {
   tunnel_id  = cloudflare_tunnel.auto_tunnel.id
   account_id = var.cloudflare_account_id
   config {
-    ingress_rule {
-      hostname = cloudflare_record.misho-valentine.hostname
-      service  = "http://misho-valentine:3000"
-    }
     ingress_rule {
       hostname = cloudflare_record.ittools.hostname
       service  = "http://it-tools:80"
