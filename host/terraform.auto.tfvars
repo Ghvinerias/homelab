@@ -29,7 +29,7 @@ lxc_hosts = {
     lxc_cores     = 1
     lxc_disk_size = 10
   }
-  "LinuxAppB-03" = {
+  "step-ca" = {
     lxc_memory    = "512"
     lxc_cores     = 1
     lxc_disk_size = 10
