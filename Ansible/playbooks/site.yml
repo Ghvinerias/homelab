@@ -1,0 +1,27 @@
+---
+# Example playbook for basic server setup
+- name: Basic server configuration
+  hosts: homelab
+  become: yes
+  
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+    
+    - name: Install common packages
+      package:
+        name: "{{ common_packages }}"
+        state: present
+    
+    - name: Set timezone
+      timezone:
+        name: "{{ timezone }}"
+    
+    - name: Ensure SSH is running
+      service:
+        name: ssh
+        state: started
+        enabled: yes

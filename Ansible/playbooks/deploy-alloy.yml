@@ -1,0 +1,89 @@
+---
+# Grafana Alloy deployment playbook
+
+- name: Deploy Grafana Alloy to homelab servers
+  hosts: homelab
+  become: yes
+  
+  vars:
+    # Alloy configuration variables (can be overridden in inventory)
+    alloy_version: "latest"
+    alloy_user: "alloy"
+    alloy_group: "alloy"
+    alloy_config_path: "/etc/alloy"
+    alloy_data_path: "/var/lib/alloy"
+    
+  pre_tasks:
+    - name: Setup SSH keys from vault
+      include_role:
+        name: ssh_key_setup
+      tags: ssh_setup
+        
+    - name: Install required packages
+      package:
+        name:
+          - curl
+          - wget
+          - systemd
+        state: present
+        
+    - name: Create alloy user
+      user:
+        name: "{{ alloy_user }}"
+        group: "{{ alloy_group }}"
+        system: yes
+        shell: /bin/false
+        home: "{{ alloy_data_path }}"
+        create_home: yes
+        
+    - name: Create alloy directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ alloy_user }}"
+        group: "{{ alloy_group }}"
+        mode: '0755'
+      loop:
+        - "{{ alloy_config_path }}"
+        - "{{ alloy_data_path }}"
+        - /var/log/alloy
+
+  roles:
+    - role: grafana.grafana.alloy
+      vars:
+        alloy_config_file: "{{ alloy_config_path }}/config.alloy"
+        alloy_flags_extra:
+          server.http.listen-addr: "127.0.0.1:12345"
+          storage.path: "{{ alloy_data_path }}"
+          
+    - role: alloy_config
+
+  post_tasks:
+    - name: Verify Alloy service status
+      systemd:
+        name: alloy
+      register: alloy_service_status
+      
+    - name: Display Alloy service status
+      debug:
+        msg: "Alloy service is {{ alloy_service_status.status.ActiveState }} on {{ inventory_hostname }}"
+        
+    - name: Check Alloy health endpoint
+      uri:
+        url: "http://127.0.0.1:12345/-/healthy"
+        method: GET
+        status_code: 200
+      register: alloy_health
+      retries: 3
+      delay: 10
+      ignore_errors: yes
+      
+    - name: Display health check results
+      debug:
+        msg: "Alloy health check: {{ 'PASSED' if alloy_health.status == 200 else 'FAILED' }}"
+        
+    - name: Cleanup SSH keys
+      include_role:
+        name: ssh_key_setup
+        tasks_from: cleanup
+      tags: ssh_cleanup

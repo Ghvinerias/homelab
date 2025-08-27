@@ -1,0 +1,8 @@
+---
+# Handlers for Alloy configuration changes
+
+- name: restart alloy
+  systemd:
+    name: alloy
+    state: restarted
+  listen: restart alloy

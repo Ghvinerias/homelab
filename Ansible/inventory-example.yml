@@ -1,0 +1,59 @@
+---
+# Example inventory with manually defined server configurations
+# Set has_docker and has_nginx explicitly for each host
+
+all:
+  children:
+    # Production servers with Docker
+    docker_servers:
+      hosts:
+        prod-web-01:
+          ansible_host: 192.168.1.100
+          ansible_user: ubuntu
+          has_docker: true        # Manually set Docker capability
+          has_nginx: false        # Manually set Nginx capability
+          custom_tools: []        # List any custom tools for log collection
+        prod-app-01:
+          ansible_host: 192.168.1.101
+          ansible_user: ubuntu
+          has_docker: true        # Has Docker installed
+          has_nginx: true         # Also has Nginx
+          custom_tools: ["mysql"] # MySQL logs will be collected
+          
+    # Development servers with mixed configurations  
+    dev_servers:
+      hosts:
+        dev-01:
+          ansible_host: 192.168.1.200
+          ansible_user: ubuntu
+          has_docker: false       # No Docker on this server
+          has_nginx: true         # But has Nginx
+          custom_tools: ["postgresql", "redis"] # Multiple custom tools
+        dev-02:
+          ansible_host: 192.168.1.201
+          ansible_user: ubuntu
+          has_docker: true        # Has Docker
+          has_nginx: false        # No Nginx
+          custom_tools: []        # No custom tools
+          
+    # Bare metal servers
+    bare_metal:
+      hosts:
+        storage-01:
+          ansible_host: 192.168.1.50
+          ansible_user: admin
+          has_docker: false       # No containerization
+          has_nginx: false        # No web server
+          custom_tools: ["prometheus", "node_exporter"] # Monitoring tools
+          
+    # Group all homelab servers together
+    homelab:
+      children:
+        - docker_servers
+        - dev_servers
+        - bare_metal
+      vars:
+        ansible_python_interpreter: /usr/bin/python3
+        # Override these endpoints with your actual infrastructure
+        alloy_loki_endpoint: "https://loki.infra.slick.ge/loki/api/v1/push"
+        alloy_prometheus_endpoint: "https://prometheus.infra.slick.ge/api/v1/write"

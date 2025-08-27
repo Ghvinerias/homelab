@@ -14,3 +14,16 @@ override.tf.json
 .terraformrc
 terraform.rc
 .terraform.lock.hcl
+
+# Ansible Vault passwords
+Ansible/.vault_pass
+**/vault_pass*
+
+# SSH Keys and sensitive files
+**/ansible_ssh_key*
+/tmp/ansible_ssh*
+**/id_rsa*
+**/id_ed25519*
+
+# Unencrypted vault files (only commit encrypted versions)
+# Ansible/group_vars/vault.yml

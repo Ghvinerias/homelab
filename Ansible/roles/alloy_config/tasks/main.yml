@@ -1,0 +1,33 @@
+---
+# Alloy Config Role - Main Tasks
+
+- name: Set default capabilities if not defined
+  set_fact:
+    has_docker: "{{ has_docker | default(false) | bool }}"
+    has_nginx: "{{ has_nginx | default(false) | bool }}"
+    #custom_tools: "{{ custom_tools | default([]) }}"
+
+- name: Display host capabilities
+  debug:
+    msg:
+      - "Host: {{ inventory_hostname }}"
+      - "Docker enabled: {{ has_docker }}"
+      - "Nginx enabled: {{ has_nginx }}"
+      #- "Custom tools: {{ custom_tools }}"
+
+- name: Generate Alloy configuration
+  template:
+    src: alloy.river.j2
+    dest: "{{ alloy_config_path }}/config.alloy"
+    owner: "{{ alloy_user }}"
+    group: "{{ alloy_group }}"
+    mode: '0644'
+    backup: yes
+  notify: restart alloy
+
+- name: Ensure Alloy service is started and enabled
+  systemd:
+    name: alloy
+    state: started
+    enabled: yes
+    daemon_reload: yes
