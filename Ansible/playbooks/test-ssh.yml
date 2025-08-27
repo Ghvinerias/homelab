@@ -1,0 +1,31 @@
+---
+# Simple playbook to test SSH key setup
+
+- name: Test SSH connection with vault-stored keys
+  hosts: homelab
+  gather_facts: no
+  
+  pre_tasks:
+    - name: Setup SSH keys from vault
+      include_role:
+        name: ssh_key_setup
+      tags: ssh_setup
+  
+  tasks:
+    - name: Test connection and gather facts
+      setup: {}
+      
+    - name: Display connection info
+      debug:
+        msg: 
+          - "Successfully connected to {{ inventory_hostname }}"
+          - "OS: {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Architecture: {{ ansible_architecture }}"
+          - "Python: {{ ansible_python_version }}"
+          
+  post_tasks:
+    - name: Cleanup SSH keys
+      include_role:
+        name: ssh_key_setup
+        tasks_from: cleanup
+      tags: ssh_cleanup

@@ -1,0 +1,18 @@
+---
+# Homelab group specific variables
+# Variables specific to your homelab environment
+
+# Network settings
+domain_name: "local.slick.ge"
+dns_servers:
+  - 10.10.10.1
+  - 10.10.40.1
+
+# Common packages to install
+common_packages:
+  - curl
+  - wget
+  - vim
+  - htop
+  - git
+  - net-tools

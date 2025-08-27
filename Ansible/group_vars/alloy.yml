@@ -1,0 +1,31 @@
+---
+# Grafana Alloy configuration variables
+
+## Alloy endpoints - update these to match your infrastructure
+#alloy_loki_endpoint: "https://loki.infra.slick.ge/loki/api/v1/push"
+#alloy_prometheus_endpoint: "https://prometheus.infra.slick.ge/api/v1/write"
+
+# Alloy installation settings
+alloy_version: "latest"
+alloy_user: "alloy"
+alloy_group: "alloy"
+
+# Default configuration components
+alloy_base_config:
+  - system_logs
+  - journal_logs
+  - system_metrics
+
+# Optional configuration components based on server capabilities
+alloy_docker_config:
+  - docker_metrics
+  - docker_logs
+
+alloy_nginx_config:
+  - nginx_logs
+  - nginx_metrics
+
+# System settings
+alloy_log_level: "info"
+alloy_data_path: "/var/lib/alloy"
+alloy_config_path: "/etc/alloy"

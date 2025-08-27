@@ -1,0 +1,11 @@
+---
+# Example inventory with manually defined server configurations
+# Set has_docker and has_nginx explicitly for each host
+homelab:
+  hosts:
+    dev-tools:
+      ansible_host: 10.10.40.33
+      ansible_user: root
+      has_docker: true        # Manually set Docker capability
+      has_nginx: false        # Manually set Nginx capability
+      #custom_tools: []        # List any custom tools for log collection

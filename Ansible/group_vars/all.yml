@@ -1,0 +1,23 @@
+---
+# Group variables for all hosts
+# These variables apply to all hosts in your inventory
+
+# SSH key configuration
+ssh_private_key_path: "/tmp/ansible_ssh_key"
+ssh_private_key_content: |
+
+# Common settings
+timezone: "UTC"
+ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+
+# Example encrypted variable (create with ansible-vault)
+# secret_api_key: !vault |
+#   $ANSIBLE_VAULT;1.1;AES256
+#   encrypted_string_here
+
+ansible_python_interpreter: /usr/bin/python3
+# Override these endpoints with your actual infrastructure
+alloy_loki_endpoint: "https://loki.infra.slick.ge/loki/api/v1/push"
+alloy_prometheus_endpoint: "https://prometheus.infra.slick.ge/api/v1/write"
