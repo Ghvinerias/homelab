@@ -1,0 +1,82 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - TZ=${TZ:-Asia/Tbilisi}
+      - WEBUI_PORT=${WEBUI_PORT:-8080}
+      - TORRENTING_PORT=${TORRENTING_PORT:-6881}
+    volumes:
+      - /mnt/media/compose/qbit-config:/config
+      - /mnt/media/compose/qbit-torrents:/torrents
+      - /mnt/media/movies:/local-movies
+      - /mnt/media/tvshows:/local-tvshows
+      - /mnt/media/music:/local-music
+      - ./tools:/tools
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
+  jellyfin:
+    image: jellyfin/jellyfin
+    container_name: jellyfin
+    group_add:
+      - "${JELLYFIN_GROUP_ID:-110}"
+    privileged: true
+    ports:
+      - 8096:8096
+    volumes:
+      - /mnt/media/movies:/local-movies
+      - /mnt/media/tvshows:/local-tvshows
+      - /mnt/media/music:/local-music
+      - /mnt/media/jellyfin-config:/config
+      - /mnt/media/jellyfin-cache:/cache
+    restart: unless-stopped
+    environment:
+      - JELLYFIN_PublishedServerUrl=${JELLYFIN_PublishedServerUrl:-https://jello.infra.slick.ge}
+  mkvmerge-consumer:
+    image: slickg/mkvmerge-consumer:latest
+    container_name: mkvmerge-consumer
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USERNAME=${RABBITMQ_USERNAME:-mkvmerge-consumer}
+      - RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD:-mkvmerge-consumer}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST:-media-automation}
+      - RABBITMQ_QUEUE_TASKS=${RABBITMQ_QUEUE_TASKS:-mkvmerge.tasks}
+      - RABBITMQ_QUEUE_DONE=${RABBITMQ_QUEUE_DONE:-mkvmerge.done}
+      - RABBITMQ_QUEUE_DLQ=${RABBITMQ_QUEUE_DLQ:-mkvmerge.tasks_DLQ}
+    volumes:
+    # These Paths should be the inside and outside of container
+      - /mnt/media/movies:/mnt/media/movies:rw
+      - /mnt/media/tvshows:/mnt/media/tvshows:rw
+  mkvmerge-notifier:
+    image: slickg/mkvmerge-notifier:latest
+    container_name: mkvmerge-notifier
+    restart: unless-stopped
+    environment:
+      - RABBITMQ_HOST=${RABBITMQ_HOST:-rabbitmq}
+      - RABBITMQ_PORT=${RABBITMQ_PORT:-5672}
+      - RABBITMQ_USERNAME=${RABBITMQ_NOTIFIER_USERNAME:-mkvmerge-notifier}
+      - RABBITMQ_PASSWORD=${RABBITMQ_NOTIFIER_PASSWORD:-mkvmerge-notifier}
+      - RABBITMQ_VHOST=${RABBITMQ_VHOST:-media-automation}
+      - RABBITMQ_QUEUE_DONE=${RABBITMQ_QUEUE_DONE:-mkvmerge.done}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_NOTIFIER_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+  telegram-bot:
+    image: slickg/telegram-torrent-bot
+    container_name: telegram-torrent-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - KINOZAL_LOGIN_URL=${KINOZAL_LOGIN_URL:-https://kinozal.guru/login.php}
+      - QBITTORRENT_URL=${QBITTORRENT_URL:-qbittorrent}
+      - QBITTORRENT_USER=${QBITTORRENT_USER:-admin}
+      - QBITTORRENT_PASS=${QBITTORRENT_PASS:-adminadmin}
+      - KINOZAL_USER=${KINOZAL_USER}
+      - KINOZAL_PASS=${KINOZAL_PASS}
+      - TORRENT_TEMP_FILE=${TORRENT_TEMP_FILE:-/tmp/temp.torrent}
