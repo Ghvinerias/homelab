@@ -1,0 +1,11 @@
+{
+    "Movies": {
+        "save_path": ""
+    },
+    "local-movies": {
+        "save_path": "/local-movies"
+    },
+    "local-tvshows": {
+        "save_path": "/local-tvshows"
+    }
+}
