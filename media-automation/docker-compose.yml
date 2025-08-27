@@ -9,11 +9,11 @@ services:
       - WEBUI_PORT=${WEBUI_PORT:-8080}
       - TORRENTING_PORT=${TORRENTING_PORT:-6881}
     volumes:
-      - /mnt/media/compose/qbit-config:/config
-      - /mnt/media/compose/qbit-torrents:/torrents
-      - /mnt/media/movies:/local-movies
-      - /mnt/media/tvshows:/local-tvshows
-      - /mnt/media/music:/local-music
+      - ./configs/qbit-config:/config/qBittorrent
+      - ./configs/qbit-torrents:/torrents
+      - ./movies:/local-movies
+      - ./tvshows:/local-tvshows
+      - ./music:/local-music
       - ./tools:/tools
     ports:
       - 8080:8080
@@ -29,11 +29,11 @@ services:
     ports:
       - 8096:8096
     volumes:
-      - /mnt/media/movies:/local-movies
-      - /mnt/media/tvshows:/local-tvshows
-      - /mnt/media/music:/local-music
-      - /mnt/media/jellyfin-config:/config
-      - /mnt/media/jellyfin-cache:/cache
+      - ./movies:/local-movies
+      - ./tvshows:/local-tvshows
+      - ./music:/local-music
+      - ./jellyfin-config:/config
+      - ./jellyfin-cache:/cache
     restart: unless-stopped
     environment:
       - JELLYFIN_PublishedServerUrl=${JELLYFIN_PublishedServerUrl:-https://jello.infra.slick.ge}
@@ -51,9 +51,9 @@ services:
       - RABBITMQ_QUEUE_DONE=${RABBITMQ_QUEUE_DONE:-mkvmerge.done}
       - RABBITMQ_QUEUE_DLQ=${RABBITMQ_QUEUE_DLQ:-mkvmerge.tasks_DLQ}
     volumes:
-    # These Paths should be the inside and outside of container
-      - /mnt/media/movies:/mnt/media/movies:rw
-      - /mnt/media/tvshows:/mnt/media/tvshows:rw
+      # These Paths should be the inside and outside of container
+      - ./movies:./movies:rw
+      - ./tvshows:./tvshows:rw
   mkvmerge-notifier:
     image: slickg/mkvmerge-notifier:latest
     container_name: mkvmerge-notifier
