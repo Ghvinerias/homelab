@@ -3,18 +3,18 @@ name: Build Multi-Arch Docker Image
 on:
   # Manual trigger
   workflow_dispatch:
-  
+
   # Weekly check for updates (every Monday at 6 AM UTC)
   schedule:
-    - cron: '0 6 * * 1'
-  
+    - cron: "0 6 * * 1"
+
   # Trigger on pushes to main branch
   push:
     branches:
       - main
     paths:
-      - 'Dockerfile'
-      - '.github/workflows/build-multiarch.yml'
+      - "Dockerfile"
+      - ".github/workflows/build-multiarch.yml"
 
 env:
   REGISTRY: docker.io
@@ -37,11 +37,11 @@ jobs:
           # Get BWS latest version
           BWS_VERSION=$(curl -sL https://api.github.com/repos/bitwarden/sdk/releases | jq -r '.[] | select(.tag_name | startswith("bws-v")) | .tag_name' | head -1)
           echo "bws-version=$BWS_VERSION" >> $GITHUB_OUTPUT
-          
+
           # Get kubectl latest version
           KUBECTL_VERSION=$(curl -sL https://dl.k8s.io/release/stable.txt)
           echo "kubectl-version=$KUBECTL_VERSION" >> $GITHUB_OUTPUT
-          
+
           # Get WireGuard container latest version
           WIREGUARD_VERSION=$(curl -sL https://api.github.com/repos/linuxserver/docker-wireguard/releases/latest | jq -r '.tag_name')
           echo "wireguard-version=$WIREGUARD_VERSION" >> $GITHUB_OUTPUT
@@ -55,12 +55,12 @@ jobs:
             echo "kubectl=none" >> .versions
             echo "wireguard=none" >> .versions
           fi
-          
+
           # Read current versions
           CURRENT_BWS=$(grep "bws=" .versions | cut -d'=' -f2)
           CURRENT_KUBECTL=$(grep "kubectl=" .versions | cut -d'=' -f2)
           CURRENT_WIREGUARD=$(grep "wireguard=" .versions | cut -d'=' -f2)
-          
+
           # Compare versions
           if [ "$CURRENT_BWS" != "${{ steps.versions.outputs.bws-version }}" ] || \
              [ "$CURRENT_KUBECTL" != "${{ steps.versions.outputs.kubectl-version }}" ] || \
@@ -101,8 +101,8 @@ jobs:
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${DOCKERHUB_USERNAME}
-          password: ${DOCKERHUB_TOKEN}
+          username: ${{ env.DOCKERHUB_USERNAME }}
+          password: ${{ env.DOCKERHUB_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -160,7 +160,7 @@ jobs:
             - BWS: ${{ needs.check-versions.outputs.bws-version }}
             - Kubectl: ${{ needs.check-versions.outputs.kubectl-version }}  
             - WireGuard: ${{ needs.check-versions.outputs.wireguard-version }}
-            
+
             Built for: linux/amd64, linux/arm64
           draft: false
           prerelease: false
