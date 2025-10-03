@@ -111,7 +111,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghvinerias/swiss-army-container
+          images: ${{ env.DOCKERHUB_USERNAME }}/swiss-army-container
           tags: |
             type=ref,event=branch
             type=ref,event=pr
