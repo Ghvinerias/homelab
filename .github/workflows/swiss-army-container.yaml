@@ -13,8 +13,8 @@ on:
     branches:
       - main
     paths:
-      - "Dockerfile"
-      - ".github/workflows/build-multiarch.yml"
+      - "swiss-army-container/Dockerfile"
+      - ".github/workflows/swiss-army-container.yaml"
 
 env:
   REGISTRY: docker.io
@@ -50,16 +50,16 @@ jobs:
         id: check
         run: |
           # Create versions file if it doesn't exist
-          if [ ! -f .versions ]; then
-            echo "bws=none" > .versions
-            echo "kubectl=none" >> .versions
-            echo "wireguard=none" >> .versions
+          if [ ! -f swiss-army-container/.versions ]; then
+            echo "bws=none" > swiss-army-container/.versions
+            echo "kubectl=none" >> swiss-army-container/.versions
+            echo "wireguard=none" >> swiss-army-container/.versions
           fi
 
           # Read current versions
-          CURRENT_BWS=$(grep "bws=" .versions | cut -d'=' -f2)
-          CURRENT_KUBECTL=$(grep "kubectl=" .versions | cut -d'=' -f2)
-          CURRENT_WIREGUARD=$(grep "wireguard=" .versions | cut -d'=' -f2)
+          CURRENT_BWS=$(grep "bws=" swiss-army-container/.versions | cut -d'=' -f2)
+          CURRENT_KUBECTL=$(grep "kubectl=" swiss-army-container/.versions | cut -d'=' -f2)
+          CURRENT_WIREGUARD=$(grep "wireguard=" swiss-army-container/.versions | cut -d'=' -f2)
 
           # Compare versions
           if [ "$CURRENT_BWS" != "${{ steps.versions.outputs.bws-version }}" ] || \
@@ -132,36 +132,18 @@ jobs:
 
       - name: Update versions file
         run: |
-          echo "bws=${{ needs.check-versions.outputs.bws-version }}" > .versions
-          echo "kubectl=${{ needs.check-versions.outputs.kubectl-version }}" >> .versions
-          echo "wireguard=${{ needs.check-versions.outputs.wireguard-version }}" >> .versions
+          echo "bws=${{ needs.check-versions.outputs.bws-version }}" > swiss-army-container/.versions
+          echo "kubectl=${{ needs.check-versions.outputs.kubectl-version }}" >> swiss-army-container/.versions
+          echo "wireguard=${{ needs.check-versions.outputs.wireguard-version }}" >> swiss-army-container/.versions
 
       - name: Commit version updates
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add .versions
+          git add swiss-army-container/.versions
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
             git commit -m "Update dependency versions [skip ci]"
             git push
           fi
-
-      - name: Create release
-        if: github.ref == 'refs/heads/main'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.run_number }}
-          release_name: Release ${{ github.run_number }}
-          body: |
-            ## Dependency Versions
-            - BWS: ${{ needs.check-versions.outputs.bws-version }}
-            - Kubectl: ${{ needs.check-versions.outputs.kubectl-version }}  
-            - WireGuard: ${{ needs.check-versions.outputs.wireguard-version }}
-
-            Built for: linux/amd64, linux/arm64
-          draft: false
-          prerelease: false
