@@ -91,10 +91,6 @@ jobs:
           secrets: |
             ${{ secrets.DOCKERHUB_USERNAME_SECRET_ID }} > DOCKERHUB_USERNAME
             ${{ secrets.DOCKERHUB_TOKEN_SECRET_ID }} > DOCKERHUB_TOKEN
-      - name: var-verify-temp
-        run: |
-          [ "${{ env.DOCKERHUB_USERNAME}}" = "username" ] && echo "its the same dude"
-          [ "${{ env.DOCKERHUB_TOKEN}}" = "token" ] && echo "its the same dude"
 
 
       - name: Set up QEMU
