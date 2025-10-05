@@ -6,6 +6,10 @@ RUN \
   apk add --no-cache \
   curl \
   openssh-client \
+  ansible \
+  sshpass\
+  rsync\
+  py3-passlib \
   jq && \
   rm -rf \
   /tmp/*
