@@ -39,3 +39,4 @@ RUN ARCH=$(uname -m) && \
 ENV PUID=1000
 ENV GUID=1000
 ENV TZ=Asia/Tbilisi
+ENTRYPOINT [ "bash" ]
