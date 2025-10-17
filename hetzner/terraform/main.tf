@@ -56,29 +56,33 @@ variable "server_type" {
 variable "node_configs" {
   default = [
     {
-      name           = "server1"
-      cloud_init_id  = "9f7efe03-5bf4-42a1-aaca-b36e00a7b177"
-      node_ip        = "10.200.40.11"
-      firewall_group = "block-all-inbound"
+      name                    = "server1"
+      cloud_init_id           = "9f7efe03-5bf4-42a1-aaca-b36e00a7b177"
+      node_internal_ip        = "10.200.40.11"
+      node_cluster_ingress_ip = "10.100.40.11"
+      firewall_group          = "block-all-inbound"
     },
 
     {
-      name           = "agent1"
-      cloud_init_id  = "c2d9f592-d9b9-449d-879b-b36e00a80234"
-      node_ip        = "10.200.40.21"
-      firewall_group = "only-web-inbound"
+      name                    = "agent1"
+      cloud_init_id           = "c2d9f592-d9b9-449d-879b-b36e00a80234"
+      node_internal_ip        = "10.200.40.21"
+      node_cluster_ingress_ip = "10.100.40.12"
+      firewall_group          = "only-web-inbound"
     },
     {
-      name           = "agent2"
-      cloud_init_id  = "a3cc5397-d98c-42a0-9c9c-b36e00a8197c"
-      node_ip        = "10.200.40.22"
-      firewall_group = "only-web-inbound"
+      name                    = "agent2"
+      cloud_init_id           = "a3cc5397-d98c-42a0-9c9c-b36e00a8197c"
+      node_internal_ip        = "10.200.40.22"
+      node_cluster_ingress_ip = "10.100.40.13"
+      firewall_group          = "only-web-inbound"
     },
     {
-      name           = "agent3"
-      cloud_init_id  = "f4f53e3b-a460-4c86-9510-b36e00a82def"
-      node_ip        = "10.200.40.23"
-      firewall_group = "only-web-inbound"
+      name                    = "agent3"
+      cloud_init_id           = "f4f53e3b-a460-4c86-9510-b36e00a82def"
+      node_internal_ip        = "10.200.40.23"
+      node_cluster_ingress_ip = "10.100.40.14"
+      firewall_group          = "only-web-inbound"
     },
   ]
 }
@@ -127,17 +131,31 @@ resource "hcloud_ssh_key" "main" {
   public_key = data.bitwarden-secrets_secret.epam_ssh_key.value
 }
 
-resource "hcloud_network" "cluster-network" {
+resource "hcloud_network" "cluster_network" {
   name     = "cluster-network"
   ip_range = "10.200.40.0/24"
 }
 
+resource "hcloud_network" "cluster_ingress_network" {
+  name     = "cluster-ingress-network"
+  ip_range = "10.100.40.0/24"
+}
+
+
 resource "hcloud_network_subnet" "cluster-net" {
-  network_id   = hcloud_network.cluster-network.id
+  network_id   = hcloud_network.cluster_network.id
   type         = "cloud"
   network_zone = "eu-central"
   ip_range     = "10.200.40.0/24"
 }
+
+resource "hcloud_network_subnet" "cluster-ingress-net" {
+  network_id   = hcloud_network.cluster_ingress_network.id
+  type         = "cloud"
+  network_zone = "eu-central"
+  ip_range     = "10.100.40.0/24"
+}
+
 
 resource "hcloud_server" "k3s_nodes" {
   for_each    = { for node in var.node_configs : node.name => node }
@@ -155,14 +173,19 @@ resource "hcloud_server" "k3s_nodes" {
     ipv6_enabled = false
   }
   network {
-    network_id = hcloud_network.cluster-network.id
-    ip         = each.value.node_ip
+    network_id = hcloud_network.cluster_network.id
+    ip         = each.value.node_internal_ip
+  }
+  network {
+    network_id = hcloud_network.cluster_ingress_network.id
+    ip         = each.value.node_cluster_ingress_ip
   }
   ssh_keys = [
     hcloud_ssh_key.main.id,
   ]
   depends_on = [
-    hcloud_network_subnet.cluster-net
+    hcloud_network_subnet.cluster-net,
+    hcloud_network_subnet.cluster-ingress-net,
   ]
 }
 
