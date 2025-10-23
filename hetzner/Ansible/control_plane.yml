@@ -1,0 +1,4 @@
+---
+# Variables specific to worker nodes
+
+kubernetes_role: control_plane

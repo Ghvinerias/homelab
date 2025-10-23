@@ -1,0 +1,8 @@
+---
+roles:
+  - name: geerlingguy.containerd
+    version: 1.3.0
+
+  - src: https://github.com/rothman857/ansible-role-kubernetes.git
+    version: master
+    name: rothman857.kubernetes

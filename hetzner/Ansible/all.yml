@@ -1,0 +1,47 @@
+---
+# Global variables for all hosts
+
+# Kubernetes version
+kubernetes_version: "1.32"
+kubernetes_version_rhel_package: "1.32"
+
+# Container runtime (containerd configuration)
+containerd_version: "1.7.22"
+containerd_default_release: true
+
+# Pod network configuration
+kubernetes_pod_network:
+  cni: "flannel"
+  cidr: "10.244.0.0/16"
+
+# Kubelet configuration (recommended method using config file)
+kubernetes_config_kubelet_configuration:
+  cgroupDriver: systemd
+
+# Cluster configuration
+kubernetes_config_cluster_configuration:
+  networking:
+    podSubnet: "{{ kubernetes_pod_network.cidr }}"
+  kubernetesVersion: "stable-{{ kubernetes_version }}"
+
+# Init configuration
+kubernetes_config_init_configuration:
+  localAPIEndpoint:
+    advertiseAddress: "{{ ansible_default_ipv4.address }}"
+
+# Don't allow pods on control plane (recommended for production)
+kubernetes_allow_pods_on_control_plane: false
+
+# Ignore preflight errors if needed (adjust based on your environment)
+kubernetes_ignore_preflight_errors: "NumCPU,Mem"
+
+# Packages to install
+kubernetes_packages:
+  - name: kubelet
+    state: present
+  - name: kubectl
+    state: present
+  - name: kubeadm
+    state: present
+  - name: kubernetes-cni
+    state: present
