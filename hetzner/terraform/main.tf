@@ -1,4 +1,20 @@
 terraform {
+  backend "s3" {
+    # Dont forget to set these environment variables:
+    #  export AWS_ACCESS_KEY_ID="YOUR_HETZNER_ACCESS_KEY"
+    #  export AWS_SECRET_ACCESS_KEY="YOUR_HETZNER_SECRET_KEY"
+    #  export AWS_DEFAULT_REGION="eu-central"
+    bucket         = "slickg"
+    key            = "homelab/hetzner/terraform/terraform.tfstate"
+    #region         = "eu-central"  # or any placeholder (Hetzner ignores this)
+    endpoint       = "https://fsn1.your-objectstorage.com"  # Replace with your Hetzner endpoint
+    #access_key     = ""
+    #secret_key     = ""
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    force_path_style            = true
+  }
   required_providers {
     hcloud = {
       source  = "hetznercloud/hcloud"
@@ -59,29 +75,30 @@ variable "node_configs" {
       name                    = "server1"
       cloud_init_id           = "9f7efe03-5bf4-42a1-aaca-b36e00a7b177"
       node_internal_ip        = "10.200.40.11"
-      node_cluster_ingress_ip = "10.100.40.11"
-      firewall_group          = "block-all-inbound"
+      #node_cluster_ingress_ip = "10.100.40.11"
+      #firewall_group          = "block-all-inbound"
+      firewall_group          = "only-web-inbound"
     },
 
     {
       name                    = "agent1"
       cloud_init_id           = "c2d9f592-d9b9-449d-879b-b36e00a80234"
       node_internal_ip        = "10.200.40.21"
-      node_cluster_ingress_ip = "10.100.40.12"
+      #node_cluster_ingress_ip = "10.100.40.21"
       firewall_group          = "only-web-inbound"
     },
     {
       name                    = "agent2"
       cloud_init_id           = "a3cc5397-d98c-42a0-9c9c-b36e00a8197c"
       node_internal_ip        = "10.200.40.22"
-      node_cluster_ingress_ip = "10.100.40.13"
+      #node_cluster_ingress_ip = "10.100.40.22"
       firewall_group          = "only-web-inbound"
     },
     {
       name                    = "agent3"
       cloud_init_id           = "f4f53e3b-a460-4c86-9510-b36e00a82def"
       node_internal_ip        = "10.200.40.23"
-      node_cluster_ingress_ip = "10.100.40.14"
+      #node_cluster_ingress_ip = "10.100.40.23"
       firewall_group          = "only-web-inbound"
     },
   ]
@@ -106,7 +123,21 @@ variable "firewalls" {
         protocol   = "tcp"
         port       = "443"
         source_ips = ["0.0.0.0/0", "::/0"]
+      },
+      {
+        direction  = "in"
+        protocol   = "tcp"
+        port       = "10250"
+        source_ips = ["0.0.0.0/0", "::/0"]
+      },
+      {
+        direction  = "in"
+        protocol   = "tcp"
+        port       = "6443"
+        source_ips = ["0.0.0.0/0", "::/0"]
       }
+
+
     ]
     "block-all-inbound" = []
   }
@@ -176,10 +207,10 @@ resource "hcloud_server" "k3s_nodes" {
     network_id = hcloud_network.cluster_network.id
     ip         = each.value.node_internal_ip
   }
-  network {
-    network_id = hcloud_network.cluster_ingress_network.id
-    ip         = each.value.node_cluster_ingress_ip
-  }
+  #network {
+  #  network_id = hcloud_network.cluster_ingress_network.id
+  #  ip         = each.value.node_cluster_ingress_ip
+  #}
   ssh_keys = [
     hcloud_ssh_key.main.id,
   ]
