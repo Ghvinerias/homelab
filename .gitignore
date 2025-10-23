@@ -1,23 +1,70 @@
-terraform.tfvars
-.vscode
-clouflare
+# ===================================
+# Terraform / OpenTofu
+# ===================================
+
+# Local .terraform directories
+.terraform/
 **/.terraform/*
+.terraform.lock.hcl
+
+# State files — contain sensitive data
 *.tfstate
 *.tfstate.*
+
+# Crash logs
 crash.log
 crash.*.log
+
+# Sensitive variable files
+*.tfvars
 *.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Example templates (keep these)
+!example.tfvars
+!example.auto.tfvars
+
+# Local environment overrides
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Testing files
+*.plan
+*.out
+
+# CLI configuration files
 .terraformrc
 terraform.rc
-.terraform.lock.hcl
+.tofurc
+tofu.rc
 
-# Ansible Vault passwords
+# Provider plugin cache
+.terraform.d/
+.plugin-cache/
+plugin-cache/
+.terraform-plugin-cache/
+
+# ===================================
+# Ansible
+# ===================================
+
+# Vault passwords (never commit!)
 Ansible/.vault_pass
 **/vault_pass*
+vault_pass.txt
+.vault_pass.txt
+vault_password_file
+.vault_password_file
+
+# Galaxy cache
+.ansible/
+.ansible_galaxy/
+
+# Role dependencies
+*/Ansible/roles/
 
 # SSH Keys and sensitive files
 **/ansible_ssh_key*
@@ -27,3 +74,42 @@ Ansible/.vault_pass
 
 # Unencrypted vault files (only commit encrypted versions)
 # Ansible/group_vars/vault.yml
+
+# ===================================
+# Environment & Secrets
+# ===================================
+
+.env
+.envrc
+secrets.env
+*.env.*
+
+# ===================================
+# IDE / Editor
+# ===================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===================================
+# General
+# ===================================
+
+# Cache directories
+.cache/
+
+# Backup files
+*.bak
+*.tmp
+*.old
+
+# Log files
+*.log
+logs/
+output.log
+
+# OS files
+.DS_Store
+Thumbs.db
