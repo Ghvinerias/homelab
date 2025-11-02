@@ -172,6 +172,11 @@ resource "hcloud_network_subnet" "cluster-net" {
   ip_range     = "10.200.40.0/24"
 }
 
+output "hetzner_cluster_network_id" {
+  description = "The ID of the Hetzner cluster network"
+  value       = hcloud_network.cluster_network.id
+}
+
 resource "hcloud_network_subnet" "cluster-ingress-net" {
   network_id   = hcloud_network.cluster_ingress_network.id
   type         = "cloud"
