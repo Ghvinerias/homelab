@@ -23,7 +23,7 @@ resource "cloudflare_record" "slick_ge_k8s_slick_ge_474a58a61946361a5e5f27bc4395
   zone_id = cloudflare_zone.slick_ge.id
   name    = "k8s.slick.ge"
   type    = "A"
-  content   = "34.132.209.58"
+  content   = "167.233.8.238"
   ttl     = 1
   proxied = false
 }

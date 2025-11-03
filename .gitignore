@@ -75,6 +75,7 @@ vault_password_file
 # Unencrypted vault files (only commit encrypted versions)
 # Ansible/group_vars/vault.yml
 
+
 # ===================================
 # Environment & Secrets
 # ===================================
