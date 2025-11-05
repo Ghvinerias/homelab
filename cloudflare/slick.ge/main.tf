@@ -36,3 +36,6 @@ resource "cloudflare_zone" "slick_ge" {
   account_id = "010fc5d22aefa82299cbae7c50028faf"
   zone = "slick.ge"
 }
+output "cloudflare_zone_slick_ge_id" {
+  value = cloudflare_zone.slick_ge.id
+}
