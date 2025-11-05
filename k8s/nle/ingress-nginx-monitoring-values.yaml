@@ -1,0 +1,29 @@
+controller:
+  hostNetwork: true
+  dnsPolicy: ClusterFirstWithHostNet
+  kind: DaemonSet
+  service:
+    type: ClusterIP
+  admissionWebhooks:
+    enabled: false
+  tolerations:
+    # Allow scheduling on control-plane nodes (new taint)
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    # Backward-compat for older taint name
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
+## Uncomment to enable monitoring of ingress-nginx, but prometheus needs to be provisioned first
+## See k8s/gp/README.md for instructions
+  # metrics:
+  #   enabled: true
+  #   service:
+  #     enabled: true
+  #   serviceMonitor:
+  #     enabled: true
+  #     namespace: monitoring
+  #     scrapeInterval: 30s
+  #     # No selector labels required since Prometheus in kube-prometheus-stack is set to scrape all ServiceMonitors
+  #     additionalLabels: {}
