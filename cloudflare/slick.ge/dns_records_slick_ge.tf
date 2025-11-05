@@ -18,16 +18,6 @@ resource "cloudflare_record" "slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7
   proxied = false
 }
 
-# record_id: 474a58a61946361a5e5f27bc4395fdaf
-resource "cloudflare_record" "slick_ge_k8s_slick_ge_474a58a61946361a5e5f27bc4395fdaf" {
-  zone_id = cloudflare_zone.slick_ge.id
-  name    = "k8s.slick.ge"
-  type    = "A"
-  content   = "167.233.8.238"
-  ttl     = 1
-  proxied = false
-}
-
 # record_id: 697591ad43036c56b3530335c311fe82
 resource "cloudflare_record" "slick_ge_varagaradu_slick_ge_697591ad43036c56b3530335c311fe82" {
   zone_id = cloudflare_zone.slick_ge.id
@@ -94,16 +84,6 @@ resource "cloudflare_record" "slick_ge_ha_slick_ge_12902d641843e070f8cb3bad00346
   name    = "ha.slick.ge"
   type    = "CNAME"
   content   = "h0jkxy235xmc7dp4b41z68vk3jrw5oei.ui.nabu.casa"
-  ttl     = 1
-  proxied = false
-}
-
-# record_id: cafd032e3183fbe7415931b0fa462035
-resource "cloudflare_record" "slick_ge_wildcard_k8s_slick_ge_cafd032e3183fbe7415931b0fa462035" {
-  zone_id = cloudflare_zone.slick_ge.id
-  name    = "*.k8s.slick.ge"
-  type    = "CNAME"
-  content   = "k8s.slick.ge"
   ttl     = 1
   proxied = false
 }

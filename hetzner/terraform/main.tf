@@ -4,8 +4,8 @@ terraform {
     #  export AWS_ACCESS_KEY_ID="YOUR_HETZNER_ACCESS_KEY"
     #  export AWS_SECRET_ACCESS_KEY="YOUR_HETZNER_SECRET_KEY"
     #  export AWS_DEFAULT_REGION="eu-central"
-    bucket   = "slickg"
-    key      = "homelab/hetzner/terraform/terraform.tfstate"
+    bucket = "slickg"
+    key    = "homelab/hetzner/terraform/terraform.tfstate"
     #region   = "eu-central"                          # Placeholder for Hetzner Object Storage
     endpoint = "https://fsn1.your-objectstorage.com" # Replace with your Hetzner endpoint
     #access_key     = ""
@@ -13,7 +13,7 @@ terraform {
     skip_credentials_validation = true
     skip_metadata_api_check     = true
     skip_region_validation      = true
-    force_path_style              = true
+    force_path_style            = true
   }
   required_providers {
     hcloud = {
@@ -32,36 +32,32 @@ terraform {
       source  = "hashicorp/null"
       version = "~> 3.2"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 4.0"
+    }
   }
 }
-
-#Bitwarden related configs
-variable "bw_access_token" {
-  description = "Bitwarden Access Token"
-  type        = string
-  sensitive   = true
+data "terraform_remote_state" "cloudflare" {
+  backend = "s3"
+  config = {
+    bucket                      = "slickg"
+    key                         = "homelab/cloudflare/slick.ge/terraform.tfstate"
+    endpoint                    = "https://fsn1.your-objectstorage.com" # Replace with your Hetzner endpoint
+    skip_credentials_validation = true
+    skip_metadata_api_check     = true
+    skip_region_validation      = true
+    use_path_style = true
+  }
 }
-provider "bitwarden-secrets" {
-  access_token = var.bw_access_token
-}
-data "bitwarden-secrets_secret" "HETZER_API_TOKEN" {
-  id = "5cc33b68-00c5-41c1-9249-b36b00b04efd"
-}
-data "bitwarden-secrets_secret" "epam_ssh_key" {
-  id = "25e9088e-bee2-4611-9f55-b36e0081c719"
-}
-data "bitwarden-secrets_secret" "mac_air_ssh_key" {
-  id = "3ec83a77-da6c-46c5-a151-b38600efd66b"
+provider "cloudflare" {
+  api_key = data.bitwarden-secrets_secret.CF_API_TOKEN.value
+  email   = "ghvineriaa@gmail.com"
 }
 
-data "bitwarden-secrets_secret" "cloud_inits" {
-  for_each = { for node in var.node_configs : node.name => node.cloud_init_id }
-  id       = each.value
-}
 #Hetzner Cloud related configs
 provider "hcloud" {
   token = data.bitwarden-secrets_secret.HETZER_API_TOKEN.value
-
 }
 
 variable "image_name" {
@@ -79,6 +75,7 @@ variable "server_type" {
   type        = string
   default     = "cpx22"
 }
+
 
 variable "node_configs" {
   default = [
@@ -151,8 +148,8 @@ resource "hcloud_firewall" "from_server_public_ips" {
 }
 
 resource "hcloud_firewall_attachment" "fw_ref" {
-    firewall_id = hcloud_firewall.from_server_public_ips.id
-    server_ids  = [for s in hcloud_server.k3s_nodes : s.id]
+  firewall_id = hcloud_firewall.from_server_public_ips.id
+  server_ids  = [for s in hcloud_server.k3s_nodes : s.id]
 }
 
 resource "hcloud_ssh_key" "main" {
@@ -199,6 +196,30 @@ resource "hcloud_server" "k3s_nodes" {
   ]
 }
 
+# create one A record per Hetzner server's public IP
+resource "cloudflare_record" "k8s_node" {
+  # Exclude the control-plane node (server1) from public DNS since it does not run ingress
+  # and will refuse connections on ports 80/443, which breaks ACME HTTP-01 validation.
+  for_each = { for k, v in hcloud_server.k3s_nodes : k => v }
+  zone_id  = data.terraform_remote_state.cloudflare.outputs.cloudflare_zone_slick_ge_id
+  name     = "k8s.slick.ge"
+  type     = "A"
+  content  = each.value.ipv4_address
+  ttl      = 1
+  proxied  = false
+}
+
+# record_id: cafd032e3183fbe7415931b0fa462035
+resource "cloudflare_record" "k8s_node_wildcard" {
+  zone_id = data.terraform_remote_state.cloudflare.outputs.cloudflare_zone_slick_ge_id
+  name    = "*.k8s.slick.ge"
+  type    = "CNAME"
+  content = "k8s.slick.ge"
+  ttl     = 1
+  proxied = false
+}
+
+
 ########################
 # Ansible Integration  #
 ########################
@@ -206,19 +227,19 @@ resource "hcloud_server" "k3s_nodes" {
 
 
 # # Execute Ansible after provisioning. Guarded by var.run_ansible.
-# resource "null_resource" "run_ansible" {
+resource "null_resource" "run_ansible" {
 
-#   depends_on = [
-#     hcloud_server.k3s_nodes,
-#   ]
+  depends_on = [
+    hcloud_server.k3s_nodes,
+  ]
 
-#   provisioner "local-exec" {
-#     working_dir = local.repo_root
-#     command     = "ansible-playbook -i ${local.ansible_inventory_path} ${local.ansible_playbook_path}"
-#   }
-# }
+  provisioner "local-exec" {
+    working_dir = "/Users/aleksandre_ghvineria/Code/homelab/hetzner/Ansible"
+    command     = "ansible-playbook -i inventory.ini provision-cluster-yamp.yml -e setup_local_kubeconfig=true"
+  }
+}
 
-# output "hetzner_public_ips" {
-#   description = "Map of Hetzner server names to their public IPv4 addresses."
-#   value       = { for name, s in hcloud_server.k3s_nodes : name => s.ipv4_address }
-# }
+output "hetzner_public_ips" {
+  description = "Map of Hetzner server names to their public IPv4 addresses."
+  value       = { for name, s in hcloud_server.k3s_nodes : name => s.ipv4_address }
+}
