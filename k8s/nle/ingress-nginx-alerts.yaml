@@ -1,0 +1,23 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ingress-nginx-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: ingress-nginx.rules
+      rules:
+        - alert: NginxIngressHigh5xxRate
+          expr: |
+            sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+              /
+            sum(rate(nginx_ingress_controller_requests[5m]))
+              > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: High 5xx rate on NGINX Ingress
+            description: "5xx responses exceed 5% of total over the last 5m"

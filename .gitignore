@@ -114,3 +114,6 @@ output.log
 # OS files
 .DS_Store
 Thumbs.db
+
+
+hetzner/Ansible/kube_config
