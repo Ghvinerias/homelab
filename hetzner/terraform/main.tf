@@ -36,23 +36,15 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 4.0"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = ">= 2.32.0"
+    }
+    helm = {
+      source  = "hashicorp/helm"
+      version = ">= 2.12.1"
+    }
   }
-}
-data "terraform_remote_state" "cloudflare" {
-  backend = "s3"
-  config = {
-    bucket                      = "slickg"
-    key                         = "homelab/cloudflare/slick.ge/terraform.tfstate"
-    endpoint                    = "https://fsn1.your-objectstorage.com" # Replace with your Hetzner endpoint
-    skip_credentials_validation = true
-    skip_metadata_api_check     = true
-    skip_region_validation      = true
-    use_path_style = true
-  }
-}
-provider "cloudflare" {
-  api_key = data.bitwarden-secrets_secret.CF_API_TOKEN.value
-  email   = "ghvineriaa@gmail.com"
 }
 
 #Hetzner Cloud related configs
@@ -107,50 +99,11 @@ variable "node_configs" {
   ]
 }
 
-locals {
-  # Build a list of the cluster nodes' public IPv4 addresses as /32 CIDRs
-  cluster_nodes_public_ipv4_cidrs = [for s in values(hcloud_server.k3s_nodes) : "${s.ipv4_address}/32"]
-}
 
-resource "hcloud_firewall" "from_server_public_ips" {
-  name = "from-servers-public-ips"
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "any"
-    source_ips = local.cluster_nodes_public_ipv4_cidrs
-  }
 
-  rule {
-    direction  = "in"
-    protocol   = "udp"
-    port       = "any"
-    source_ips = local.cluster_nodes_public_ipv4_cidrs
-  }
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "443"
-    source_ips = ["0.0.0.0/0", "::/0"]
-  }
 
-  rule {
-    direction  = "in"
-    protocol   = "tcp"
-    port       = "80"
-    source_ips = ["0.0.0.0/0", "::/0"]
-  }
-  depends_on = [
-    hcloud_server.k3s_nodes,
-  ]
-}
-
-resource "hcloud_firewall_attachment" "fw_ref" {
-  firewall_id = hcloud_firewall.from_server_public_ips.id
-  server_ids  = [for s in hcloud_server.k3s_nodes : s.id]
-}
 
 resource "hcloud_ssh_key" "main" {
   name       = "epam_ssh_key"
@@ -161,17 +114,7 @@ resource "hcloud_ssh_key" "main-extra" {
   public_key = data.bitwarden-secrets_secret.mac_air_ssh_key.value
 }
 
-resource "hcloud_network" "cluster_network" {
-  name     = "cluster-network"
-  ip_range = "10.200.40.0/24"
-}
 
-resource "hcloud_network_subnet" "cluster-net" {
-  network_id   = hcloud_network.cluster_network.id
-  type         = "cloud"
-  network_zone = "eu-central"
-  ip_range     = "10.200.40.0/24"
-}
 
 resource "hcloud_server" "k3s_nodes" {
   for_each    = { for node in var.node_configs : node.name => node }
@@ -196,50 +139,9 @@ resource "hcloud_server" "k3s_nodes" {
   ]
 }
 
-# create one A record per Hetzner server's public IP
-resource "cloudflare_record" "k8s_node" {
-  # Exclude the control-plane node (server1) from public DNS since it does not run ingress
-  # and will refuse connections on ports 80/443, which breaks ACME HTTP-01 validation.
-  for_each = { for k, v in hcloud_server.k3s_nodes : k => v }
-  zone_id  = data.terraform_remote_state.cloudflare.outputs.cloudflare_zone_slick_ge_id
-  name     = "k8s.slick.ge"
-  type     = "A"
-  content  = each.value.ipv4_address
-  ttl      = 1
-  proxied  = false
-}
-
-# record_id: cafd032e3183fbe7415931b0fa462035
-resource "cloudflare_record" "k8s_node_wildcard" {
-  zone_id = data.terraform_remote_state.cloudflare.outputs.cloudflare_zone_slick_ge_id
-  name    = "*.k8s.slick.ge"
-  type    = "CNAME"
-  content = "k8s.slick.ge"
-  ttl     = 1
-  proxied = false
-}
-
-
-########################
-# Ansible Integration  #
-########################
-
-
-
-# # Execute Ansible after provisioning. Guarded by var.run_ansible.
-resource "null_resource" "run_ansible" {
-
-  depends_on = [
-    hcloud_server.k3s_nodes,
-  ]
-
-  provisioner "local-exec" {
-    working_dir = "/Users/aleksandre_ghvineria/Code/homelab/hetzner/Ansible"
-    command     = "ansible-playbook -i inventory.ini provision-cluster-yamp.yml -e setup_local_kubeconfig=true"
-  }
-}
-
 output "hetzner_public_ips" {
   description = "Map of Hetzner server names to their public IPv4 addresses."
   value       = { for name, s in hcloud_server.k3s_nodes : name => s.ipv4_address }
 }
+
+
