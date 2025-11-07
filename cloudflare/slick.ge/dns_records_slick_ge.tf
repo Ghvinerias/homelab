@@ -1,13 +1,3 @@
-# record_id: 796fa846d8c1ae8288c4fb86caf04f35
-resource "cloudflare_record" "slick_ge_authentik_slick_ge_796fa846d8c1ae8288c4fb86caf04f35" {
-  zone_id = cloudflare_zone.slick_ge.id
-  name    = "authentik.slick.ge"
-  type    = "A"
-  content   = "49.13.76.219"
-  ttl     = 1
-  proxied = false
-}
-
 # record_id: ddf2824cf6d85d64e72b7b94e7c9cb85
 resource "cloudflare_record" "slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7c9cb85" {
   zone_id = cloudflare_zone.slick_ge.id
