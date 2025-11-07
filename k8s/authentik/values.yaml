@@ -1,0 +1,45 @@
+authentik:
+  secret_key: "PleaseGenerateASecureKey"
+  # This sends anonymous usage-data, stack traces on errors and
+  # performance data to sentry.io, and is fully opt-in
+  error_reporting:
+    enabled: true
+  postgresql:
+    password: "ThisIsNotASecurePassword"
+  # email:
+  #   # -- SMTP Server emails are sent from, fully optional
+  #   host: ""
+  #   port: 
+  #   # -- SMTP credentials. When left empty, no authentication will be done.
+  #   username: ""
+  #   # -- SMTP credentials. When left empty, no authentication will be done.
+  #   password: ""
+  #   # -- Enable either use_tls or use_ssl. They can't be enabled at the same time.
+  #   use_tls: false
+  #   # -- Enable either use_tls or use_ssl. They can't be enabled at the same time.
+  #   use_ssl: false
+  #   # -- Connection timeout in seconds
+  #   timeout: 30
+  #   # -- Email 'from' address can either be in the format "foo@bar.baz" or "authentik <foo@bar.baz>"
+  #   from: ""
+server:
+  ingress:
+    # Specify kubernetes ingress controller class name
+    ingressClassName: nginx
+    annotations:
+      cert-manager.io/cluster-issuer: "letsencrypt-prod"
+      kubernetes.io/tls-acme: "true"
+    enabled: true
+    hosts:
+      - authentik.domain.com
+    path: /
+    pathType: Prefix
+    tls:
+      - secretName: authentik-tls
+        hosts:
+          - authentik.domain.com
+
+postgresql:
+  enabled: true
+  auth:
+    password: "ThisIsNotASecurePassword"
