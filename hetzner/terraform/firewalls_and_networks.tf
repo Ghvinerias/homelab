@@ -29,13 +29,13 @@ resource "hcloud_firewall" "from_server_public_ips" {
     source_ips = ["0.0.0.0/0", "::/0"]
   }
   depends_on = [
-    hcloud_server.k3s_nodes,
+    hcloud_server.k8s_nodes,
   ]
 }
 
 resource "hcloud_firewall_attachment" "fw_ref" {
   firewall_id = hcloud_firewall.from_server_public_ips.id
-  server_ids  = [for s in hcloud_server.k3s_nodes : s.id]
+  server_ids  = [for s in hcloud_server.k8s_nodes : s.id]
 }
 
 resource "hcloud_network" "cluster_network" {
@@ -52,5 +52,5 @@ resource "hcloud_network_subnet" "cluster-net" {
 
 locals {
   # Build a list of the cluster nodes' public IPv4 addresses as /32 CIDRs
-  cluster_nodes_public_ipv4_cidrs = [for s in values(hcloud_server.k3s_nodes) : "${s.ipv4_address}/32"]
+  cluster_nodes_public_ipv4_cidrs = [for s in values(hcloud_server.k8s_nodes) : "${s.ipv4_address}/32"]
 }
