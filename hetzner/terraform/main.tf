@@ -69,33 +69,40 @@ variable "server_type" {
 }
 
 
+
+## If you remove nodes from this list,
+## make sure to also remove their corresponding wg IP form hetzner/Ansible/inventory.ini
+## if not playbook will fail.
 variable "node_configs" {
   default = [
     {
-      name             = "server1"
+      name             = "control-plane-1"
       cloud_init_id    = "9f7efe03-5bf4-42a1-aaca-b36e00a7b177"
       node_internal_ip = "10.200.40.11"
       firewall_group   = "only-web-inbound"
+      wireguard_ip      = "10.0.1.3"
     },
 
     {
-      name             = "agent1"
+      name             = "worker-1"
       cloud_init_id    = "c2d9f592-d9b9-449d-879b-b36e00a80234"
       node_internal_ip = "10.200.40.21"
       firewall_group   = "block-all-inbound"
+      wireguard_ip      = "10.0.1.4"
     },
     {
-      name             = "agent2"
+      name             = "worker-2"
       cloud_init_id    = "a3cc5397-d98c-42a0-9c9c-b36e00a8197c"
       node_internal_ip = "10.200.40.22"
       firewall_group   = "block-all-inbound"
+      wireguard_ip      = "10.0.1.5"
     },
-    {
-      name             = "agent3"
-      cloud_init_id    = "f4f53e3b-a460-4c86-9510-b36e00a82def"
-      node_internal_ip = "10.200.40.23"
-      firewall_group   = "block-all-inbound"
-    },
+    #{
+    #  name             = "agent3"
+    #  cloud_init_id    = "f4f53e3b-a460-4c86-9510-b36e00a82def"
+    #  node_internal_ip = "10.200.40.23"
+    #  firewall_group   = "block-all-inbound"
+    #},
   ]
 }
 
@@ -116,7 +123,7 @@ resource "hcloud_ssh_key" "main-extra" {
 
 
 
-resource "hcloud_server" "k3s_nodes" {
+resource "hcloud_server" "k8s_nodes" {
   for_each    = { for node in var.node_configs : node.name => node }
   name        = each.value.name
   image       = var.image_name
@@ -137,11 +144,17 @@ resource "hcloud_server" "k3s_nodes" {
     hcloud_ssh_key.main.id,
     hcloud_ssh_key.main-extra.id,
   ]
+
+  labels = {
+    "cluster" = "k8s"
+    "role"    = startswith(each.key, "control") ? "control_plane" : "worker"
+    "managed_by" = "terraform"
+  }
 }
 
 output "hetzner_public_ips" {
   description = "Map of Hetzner server names to their public IPv4 addresses."
-  value       = { for name, s in hcloud_server.k3s_nodes : name => s.ipv4_address }
+  value       = { for name, s in hcloud_server.k8s_nodes : name => s.ipv4_address }
 }
 
 

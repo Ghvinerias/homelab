@@ -18,7 +18,7 @@ provider "cloudflare" {
 resource "cloudflare_record" "k8s_node" {
   # Exclude the control-plane node (server1) from public DNS since it does not run ingress
   # and will refuse connections on ports 80/443, which breaks ACME HTTP-01 validation.
-  for_each = { for k, v in hcloud_server.k3s_nodes : k => v }
+  for_each = { for k, v in hcloud_server.k8s_nodes : k => v }
   zone_id  = data.terraform_remote_state.cloudflare.outputs.cloudflare_zone_slick_ge_id
   name     = "k8s.slick.ge"
   type     = "A"
