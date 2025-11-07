@@ -65,7 +65,7 @@ variable "location" {
 variable "server_type" {
   description = "The type of server to use for the cluster nodes."
   type        = string
-  default     = "cpx22"
+  default     = "cx23"
 }
 
 
