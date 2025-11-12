@@ -10,6 +10,26 @@
     ingress_nginx_values: "{{ lookup('file', './values.yaml') }}"
 
   tasks:
+    - name: Deploy Bitwarden secrets configuration
+      kubernetes.core.k8s:
+        state: present
+        definition: "{{ lookup('file', './deploy-bws-secrets.yaml') | from_yaml_all | list }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for external secrets to be ready
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Secret
+        name: authentik-secrets
+        namespace: authentik
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: secret_status
+      until: secret_status.resources | length > 0
+      retries: 30
+      delay: 10
+
     - name: Ensure authentik Helm repo is present
       kubernetes.core.helm_repository:
         name: authentik
