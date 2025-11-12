@@ -1,0 +1,231 @@
+---
+- name: Deploy External Secrets Operator with Bitwarden Integration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  
+  vars:
+    # Namespace configuration
+    eso_namespace: external-secrets
+    
+    # Bitwarden configuration (override these in inventory or with --extra-vars)
+    bitwarden_org_id: "{{ lookup('env', 'BITWARDEN_ORG_ID') }}"
+    bitwarden_project_id: "{{ lookup('env', 'BITWARDEN_PROJECT_ID') }}"
+    bitwarden_access_token: "{{ lookup('env', 'BITWARDEN_ACCESS_TOKEN') }}"
+    
+    # Helm chart configuration
+    helm_repo_name: external-secrets
+    helm_repo_url: https://charts.external-secrets.io
+    helm_chart_version: ""  # Leave empty for latest
+    
+    # TLS configuration
+    tls_certificate_name: bitwarden-tls-certs
+    tls_issuer_name: selfsigned-issuer
+    
+    # Manifest files directory
+    manifests_dir: "{{ playbook_dir }}"
+    
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - bitwarden_org_id is defined and bitwarden_org_id | length > 0
+          - bitwarden_project_id is defined and bitwarden_project_id | length > 0
+          - bitwarden_access_token is defined and bitwarden_access_token | length > 0
+        fail_msg: "Missing required Bitwarden credentials. Set BITWARDEN_ORG_ID, BITWARDEN_PROJECT_ID, and BITWARDEN_ACCESS_TOKEN environment variables."
+    
+    - name: Check if kubectl is available
+      ansible.builtin.command: kubectl version --client --output=yaml
+      register: kubectl_version
+      changed_when: false
+      failed_when: kubectl_version.rc != 0
+
+    - name: Check if helm is available
+      ansible.builtin.command: helm version --short
+      register: helm_version
+      changed_when: false
+      failed_when: helm_version.rc != 0
+
+    - name: Check if cert-manager is installed
+      ansible.builtin.command: kubectl get namespace cert-manager
+      register: cert_manager_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if cert-manager is not installed
+      ansible.builtin.fail:
+        msg: "cert-manager is not installed. Please install it before running this playbook."
+      when: cert_manager_check.rc != 0
+
+  tasks:
+    - name: Add External Secrets Helm repository
+      kubernetes.core.helm_repository:
+        name: "{{ helm_repo_name }}"
+        repo_url: "{{ helm_repo_url }}"
+
+    - name: Create external-secrets namespace
+      kubernetes.core.k8s:
+        name: "{{ eso_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Deploy External Secrets Operator with Bitwarden SDK
+      kubernetes.core.helm:
+        name: external-secrets
+        chart_ref: "{{ helm_repo_name }}/external-secrets"
+        chart_version: "{{ helm_chart_version if helm_chart_version else omit }}"
+        release_namespace: "{{ eso_namespace }}"
+        create_namespace: true
+        wait: true
+        wait_timeout: 5m
+        values:
+          bitwarden-sdk-server:
+            enabled: true
+            image:
+              tls:
+                enabled: true
+
+    - name: Wait for External Secrets pods to be ready
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ eso_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=external-secrets"
+      register: eso_pods
+      until: eso_pods.resources | length > 0 and eso_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+      retries: 30
+      delay: 10
+
+    - name: Create self-signed ClusterIssuer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: "{{ tls_issuer_name }}"
+          spec:
+            selfSigned: {}
+
+    - name: Create TLS certificate
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: "{{ tls_certificate_name }}"
+            namespace: "{{ eso_namespace }}"
+          spec:
+            secretName: "{{ tls_certificate_name }}"
+            issuerRef:
+              name: "{{ tls_issuer_name }}"
+              kind: ClusterIssuer
+            dnsNames:
+              - bitwarden-sdk-server
+              - "bitwarden-sdk-server.{{ eso_namespace }}"
+              - "bitwarden-sdk-server.{{ eso_namespace }}.svc"
+              - "bitwarden-sdk-server.{{ eso_namespace }}.svc.cluster.local"
+
+    - name: Wait for certificate to be ready
+      kubernetes.core.k8s_info:
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        name: "{{ tls_certificate_name }}"
+        namespace: "{{ eso_namespace }}"
+      register: certificate_status
+      until: certificate_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+      when: certificate_status.resources | length > 0
+
+    - name: Create Bitwarden credentials secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: bitwarden-credentials
+            namespace: "{{ eso_namespace }}"
+          type: Opaque
+          stringData:
+            token: "{{ bitwarden_access_token }}"
+
+    - name: Create Bitwarden SecretStore
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: external-secrets.io/v1
+          kind: SecretStore
+          metadata:
+            name: bitwarden-secretsmanager
+            namespace: "{{ eso_namespace }}"
+          spec:
+            provider:
+              bitwardensecretsmanager:
+                apiURL: "https://api.bitwarden.com"
+                identityURL: "https://identity.bitwarden.com"
+                bitwardenServerSDKURL: "https://bitwarden-sdk-server:9998"
+                organizationID: "{{ bitwarden_org_id }}"
+                projectID: "{{ bitwarden_project_id }}"
+                caProvider:
+                  type: Secret
+                  name: "{{ tls_certificate_name }}"
+                  key: ca.crt
+                auth:
+                  secretRef:
+                    credentials:
+                      name: bitwarden-credentials
+                      key: token
+
+    - name: Wait for SecretStore to be ready
+      kubernetes.core.k8s_info:
+        api_version: external-secrets.io/v1
+        kind: SecretStore
+        name: bitwarden-secretsmanager
+        namespace: "{{ eso_namespace }}"
+      register: secretstore_status
+      until: >
+        secretstore_status.resources | length > 0 and
+        secretstore_status.resources[0].status is defined and
+        secretstore_status.resources[0].status.conditions is defined and
+        secretstore_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 30
+      delay: 10
+
+  post_tasks:
+    - name: Display deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "=========================================="
+          - "External Secrets Operator Deployment Complete"
+          - "=========================================="
+          - "Namespace: {{ eso_namespace }}"
+          - "SecretStore: bitwarden-secretsmanager"
+          - ""
+          - "Next Steps:"
+          - "1. Create an ExternalSecret to sync secrets from Bitwarden"
+          - "2. Verify: kubectl get secretstore,externalsecret -n {{ eso_namespace }}"
+          - ""
+          - "Example ExternalSecret:"
+          - "  kubectl apply -f {{ manifests_dir }}/bitwarden-externalsecret.yaml"
+          - ""
+          - "Verify logs:"
+          - "  kubectl logs -l app.kubernetes.io/name=external-secrets -n {{ eso_namespace }}"
+
+    - name: Get ESO pods status
+      kubernetes.core.k8s_info:
+        kind: Pod
+        namespace: "{{ eso_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name in (external-secrets, bitwarden-sdk-server)"
+      register: final_pods
+
+    - name: Display pod status
+      ansible.builtin.debug:
+        msg: "Pod {{ item.metadata.name }}: {{ item.status.phase }} ({{ item.status.conditions | selectattr('type', 'equalto', 'Ready') | map(attribute='status') | first | default('Unknown') }})"
+      loop: "{{ final_pods.resources }}"
+      loop_control:
+        label: "{{ item.metadata.name }}"
