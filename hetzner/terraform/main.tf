@@ -98,7 +98,7 @@ variable "node_configs" {
       wireguard_ip      = "10.0.1.5"
     },
     #{
-    #  name             = "agent3"
+    #  name             = "worker-3"
     #  cloud_init_id    = "f4f53e3b-a460-4c86-9510-b36e00a82def"
     #  node_internal_ip = "10.200.40.23"
     #  firewall_group   = "block-all-inbound"
