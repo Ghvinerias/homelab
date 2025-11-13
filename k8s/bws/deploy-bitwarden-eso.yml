@@ -3,28 +3,28 @@
   hosts: localhost
   connection: local
   gather_facts: false
-  
+
   vars:
     # Namespace configuration
     eso_namespace: external-secrets
-    
+
     # Bitwarden configuration (override these in inventory or with --extra-vars)
     bitwarden_org_id: "{{ lookup('env', 'BITWARDEN_ORG_ID') }}"
     bitwarden_project_id: "{{ lookup('env', 'BITWARDEN_PROJECT_ID') }}"
     bitwarden_access_token: "{{ lookup('env', 'BITWARDEN_ACCESS_TOKEN') }}"
-    
+
     # Helm chart configuration
     helm_repo_name: external-secrets
     helm_repo_url: https://charts.external-secrets.io
-    helm_chart_version: ""  # Leave empty for latest
-    
+    helm_chart_version: "" # Leave empty for latest
+
     # TLS configuration
     tls_certificate_name: bitwarden-tls-certs
     tls_issuer_name: selfsigned-issuer
-    
+
     # Manifest files directory
     manifests_dir: "{{ playbook_dir }}"
-    
+
   pre_tasks:
     - name: Validate required variables
       ansible.builtin.assert:
@@ -33,7 +33,7 @@
           - bitwarden_project_id is defined and bitwarden_project_id | length > 0
           - bitwarden_access_token is defined and bitwarden_access_token | length > 0
         fail_msg: "Missing required Bitwarden credentials. Set BITWARDEN_ORG_ID, BITWARDEN_PROJECT_ID, and BITWARDEN_ACCESS_TOKEN environment variables."
-    
+
     - name: Check if kubectl is available
       ansible.builtin.command: kubectl version --client --output=yaml
       register: kubectl_version
@@ -70,6 +70,17 @@
         kind: Namespace
         state: present
 
+    - name: Create self-signed ClusterIssuer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: "{{ tls_issuer_name }}"
+          spec:
+            selfSigned: {}
+
     - name: Deploy External Secrets Operator with Bitwarden SDK
       kubernetes.core.helm:
         name: external-secrets
@@ -78,13 +89,11 @@
         release_namespace: "{{ eso_namespace }}"
         create_namespace: true
         wait: true
-        wait_timeout: 5m
+        wait_timeout: 10m
         values:
+          installCRDs: true
           bitwarden-sdk-server:
             enabled: true
-            image:
-              tls:
-                enabled: true
 
     - name: Wait for External Secrets pods to be ready
       kubernetes.core.k8s_info:
@@ -96,17 +105,6 @@
       until: eso_pods.resources | length > 0 and eso_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
       retries: 30
       delay: 10
-
-    - name: Create self-signed ClusterIssuer
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: cert-manager.io/v1
-          kind: ClusterIssuer
-          metadata:
-            name: "{{ tls_issuer_name }}"
-          spec:
-            selfSigned: {}
 
     - name: Create TLS certificate
       kubernetes.core.k8s:
@@ -135,10 +133,23 @@
         name: "{{ tls_certificate_name }}"
         namespace: "{{ eso_namespace }}"
       register: certificate_status
-      until: certificate_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
-      retries: 30
-      delay: 10
-      when: certificate_status.resources | length > 0
+      until: >
+        certificate_status.resources | length > 0 and
+        certificate_status.resources[0].status is defined and
+        certificate_status.resources[0].status.conditions is defined and
+        certificate_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+      retries: 60
+      delay: 5
+
+    - name: Restart Bitwarden SDK server if certificate was just created
+      kubernetes.core.k8s:
+        state: absent
+        api_version: v1
+        kind: Pod
+        namespace: "{{ eso_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=bitwarden-sdk-server"
+      when: certificate_status.changed
 
     - name: Create Bitwarden credentials secret
       kubernetes.core.k8s:
