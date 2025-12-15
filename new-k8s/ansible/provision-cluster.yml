@@ -1,0 +1,336 @@
+- name: Provision Kubernetes control plane (simple)
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    KUBE_VERSION: "v1.31.0"
+    CONTAINERD_VERSION: "1.7.22"
+    RUNC_VERSION: "1.2.1"
+    CNI_PLUGINS_VERSION: "1.5.1"
+    POD_NETWORK_CIDR: "10.244.0.0/16"
+    MASTER_PRIVATE_IP: "{{ master_private_ip | default('10.11.99.51') }}"
+    EXTRA_API_SERVER_SANS: "{{ '127.0.0.1,10.11.99.50,k8s-mgmt.infra.slick.ge' }}"
+
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+
+  tasks:
+    - name: Wait for SSH to be ready (control plane & nodes)
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 10
+        timeout: 600
+
+    - name: Kernel modules file
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+
+    - name: Load kernel modules
+      ansible.builtin.shell: |
+        modprobe overlay
+        modprobe br_netfilter
+
+    - name: Sysctl config
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/k8s.conf
+        mode: "0644"
+        content: |
+          net.bridge.bridge-nf-call-iptables  = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.ipv4.ip_forward                 = 1
+          net.ipv6.conf.default.forwarding    = 1
+
+    - name: Apply sysctl
+      ansible.builtin.shell: sysctl --system
+
+    - name: Download containerd
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ CONTAINERD_VERSION }}/containerd-{{ CONTAINERD_VERSION }}-linux-amd64.tar.gz"
+        dest: /tmp/containerd.tgz
+        mode: "0644"
+
+    - name: Install containerd
+      ansible.builtin.unarchive:
+        src: /tmp/containerd.tgz
+        dest: /usr/local
+        remote_src: true
+
+    - name: Install containerd systemd service
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/containerd/containerd/main/containerd.service
+        dest: /usr/lib/systemd/system/containerd.service
+        mode: "0644"
+
+    - name: Install runc
+      ansible.builtin.get_url:
+        url: "https://github.com/opencontainers/runc/releases/download/v{{ RUNC_VERSION }}/runc.amd64"
+        dest: /usr/local/sbin/runc
+        mode: "0755"
+
+    - name: Ensure CNI dir
+      ansible.builtin.file:
+        path: /opt/cni/bin
+        state: directory
+        mode: "0755"
+
+    - name: Download CNI plugins
+      ansible.builtin.get_url:
+        url: "https://github.com/containernetworking/plugins/releases/download/v{{ CNI_PLUGINS_VERSION }}/cni-plugins-linux-amd64-v{{ CNI_PLUGINS_VERSION }}.tgz"
+        dest: /tmp/cni.tgz
+        mode: "0644"
+
+    - name: Install CNI plugins
+      ansible.builtin.unarchive:
+        src: /tmp/cni.tgz
+        dest: /opt/cni/bin
+        remote_src: true
+
+    - name: Ensure containerd dir
+      ansible.builtin.file:
+        path: /etc/containerd/
+        state: directory
+        mode: "0755"
+
+    - name: Generate containerd config
+      ansible.builtin.shell: "containerd config default | tee /etc/containerd/config.toml >/dev/null"
+      args:
+        creates: /etc/containerd/config.toml
+
+    - name: Enable systemd cgroup in containerd
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: "SystemdCgroup = false"
+        replace: "SystemdCgroup = true"
+
+    - name: Enable and start containerd
+      ansible.builtin.systemd:
+        name: containerd
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Base deps
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gpg
+        state: present
+        update_cache: true
+
+    - name: Ensure apt keyrings dir
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Add Kubernetes apt key
+      ansible.builtin.shell: |
+        curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | \
+        gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+    - name: Add Kubernetes apt repo
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        mode: "0644"
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /
+
+    - name: Install kubelet/kubeadm/kubectl and other tools
+      ansible.builtin.apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+          - ansible
+          - git
+          - curl
+          - net-tools
+          - gnupg2
+          - software-properties-common
+          - apt-transport-https
+          - ca-certificates
+          - wget
+          - jq
+          - socat
+          - conntrack
+          - ipset
+        state: present
+        update_cache: true
+
+    - name: Hold Kubernetes packages
+      ansible.builtin.shell: apt-mark hold kubelet kubeadm kubectl
+
+    - name: Pull control plane images
+      ansible.builtin.command: kubeadm config images pull
+      register: pull_images
+      failed_when: pull_images.rc != 0
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: kubeadm init
+      ansible.builtin.command: >
+        kubeadm init
+        --pod-network-cidr={{ POD_NETWORK_CIDR }}
+        --kubernetes-version={{ KUBE_VERSION }}
+        --apiserver-advertise-address={{ MASTER_PRIVATE_IP }}
+        --apiserver-cert-extra-sans={{ EXTRA_API_SERVER_SANS }}
+        --ignore-preflight-errors=NumCPU
+        --upload-certs
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: kubeadm_init
+      failed_when: kubeadm_init.rc != 0 and kubeadm_init.rc != 1
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Verify kubeadm init success
+      ansible.builtin.stat:
+        path: /etc/kubernetes/admin.conf
+      register: admin_conf
+      failed_when: not admin_conf.stat.exists
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Configure kubectl for root
+      ansible.builtin.shell: |
+        mkdir -p /root/.kube
+        cp -i /etc/kubernetes/admin.conf /root/.kube/config
+        chown root:root /root/.kube/config
+      args:
+        creates: /root/.kube/config
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Deploy Flannel
+      ansible.builtin.command: >
+        kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      register: flannel_deploy
+      failed_when: flannel_deploy.rc != 0
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Wait for Flannel pods to be ready
+      ansible.builtin.command: kubectl get pods -n kube-flannel -o jsonpath='{.items[*].status.phase}'
+      register: flannel_status
+      until: "'Pending' not in flannel_status.stdout and 'ContainerCreating' not in flannel_status.stdout"
+      retries: 30
+      delay: 10
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Save and show join command
+      ansible.builtin.shell: "kubeadm token create --print-join-command | tee /root/join.sh"
+      args:
+        creates: /root/join.sh
+      register: join_cmd
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Join command (debug)
+      ansible.builtin.debug:
+        var: join_cmd.stdout
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Read kubeconfig from control plane
+      ansible.builtin.slurp:
+        src: /root/.kube/config
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      register: kubeconfig_b64
+
+    - name: Write kubeconfig to local file
+      become: false
+      ansible.builtin.copy:
+        dest: ./kube_config
+        mode: "0600"
+        content: "{{ kubeconfig_b64.content | b64decode }}"
+      run_once: true
+      delegate_to: localhost
+
+    - name: Ensure local kube dir exists (~/.kube)
+      become: false
+      ansible.builtin.file:
+        path: "{{ lookup('env','HOME') }}/.kube"
+        state: directory
+        mode: "0700"
+      run_once: true
+      delegate_to: localhost
+      when: setup_local_kubeconfig | default(false) | bool
+
+    - name: Copy local kube_config to ~/.kube/config
+      become: false
+      ansible.builtin.copy:
+        src: ./kube_config
+        dest: "{{ lookup('env','HOME') }}/.kube/config"
+        mode: "0600"
+      run_once: true
+      delegate_to: localhost
+      when: setup_local_kubeconfig | default(false) | bool
+    
+    - name: "Remove the temprorary kube_config file"
+      ansible.builtin.file:
+        path: ./kube_config
+        state: absent
+      run_once: true
+      delegate_to: localhost
+      when: setup_local_kubeconfig | default(false) | bool
+
+- name: Join selected nodes to the cluster (optional)
+  hosts: nodes
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Wait for SSH to be ready (nodes)
+      ansible.builtin.wait_for_connection:
+        delay: 5
+        sleep: 10
+        timeout: 600
+
+    - name: Read join command from master node
+      ansible.builtin.slurp:
+        src: /root/join.sh
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      run_once: true
+      register: join_script
+
+    - name: Set join command fact on all targets
+      ansible.builtin.set_fact:
+        join_cmd: "{{ (hostvars[play_hosts | first].join_script.content | b64decode).strip() }}"
+
+    - name: Write join script on target
+      ansible.builtin.copy:
+        dest: /root/join.sh
+        mode: "0755"
+        content: "{{ join_cmd }}"
+
+    - name: Execute join (idempotent)
+      ansible.builtin.command: "{{ join_cmd }}"
+      args:
+        creates: /etc/kubernetes/kubelet.conf
+      register: node_join
+      failed_when: node_join.rc != 0 and 'already exists' not in node_join.stderr
+
+    - name: Verify node joined successfully
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+      failed_when: not kubelet_conf.stat.exists
+
+    - name: Wait for node to be ready
+      ansible.builtin.command: kubectl get node {{ inventory_hostname }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 20
+      delay: 15
+      delegate_to: "{{ groups['control_plane'][0] }}"

@@ -1,0 +1,214 @@
+---
+- name: Deploy Grafana and Prometheus Stack with Helm
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: "" # Set to your context if needed, else leave blank
+    deployment_namespace: "monitoring"
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/grafana"
+    grafana_ingress_host: "grafana.infra.k8s.slick.ge"
+    prometheus_ingress_host: "prometheus.infra.k8s.slick.ge"
+    alertmanager_ingress_host: "alertmanager.infra.k8s.slick.ge"
+
+  tasks:
+    - name: Create monitoring namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for Grafana admin credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: grafana-admin
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: grafana-admin
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    admin-user: "{{ '{{' }} .GRAFANA_ADMIN_USER.Value {{ '}}' }}"
+                    admin-password: "{{ '{{' }} .GRAFANA_ADMIN_PASSWORD.Value {{ '}}' }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Ensure prometheus-community Helm repo is present
+      kubernetes.core.helm_repository:
+        name: prometheus-community
+        repo_url: https://prometheus-community.github.io/helm-charts
+
+    - name: Deploy kube-prometheus-stack via Helm
+      kubernetes.core.helm:
+        name: kube-prometheus-stack
+        chart_ref: prometheus-community/kube-prometheus-stack
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        values:
+          # kube-prometheus-stack values override for homelab
+          # Chart: prometheus-community/kube-prometheus-stack
+          nameOverride: ""
+          fullnameOverride: ""
+          grafana:
+            enabled: true
+            defaultDashboardsEnabled: true
+            # Use an existing secret for admin credentials to avoid committing secrets
+            admin:
+              existingSecret: grafana-admin
+              userKey: admin-user
+              passwordKey: admin-password
+            service:
+              type: ClusterIP
+              port: 80
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              annotations:
+                cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                kubernetes.io/tls-acme: "true"
+              hosts:
+                - "{{ grafana_ingress_host }}"
+              path: /
+              pathType: Prefix
+              tls:
+                - secretName: grafana-tls
+                  hosts:
+                    - "{{ grafana_ingress_host }}"
+            persistence:
+              enabled: true
+              type: pvc
+              accessModes:
+                - ReadWriteOnce
+              size: 10Gi
+              storageClassName: "longhorn"
+          prometheus:
+            enabled: true
+            service:
+              type: ClusterIP
+              port: 9090
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              annotations:
+                cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                kubernetes.io/tls-acme: "true"
+              hosts:
+                - "{{ prometheus_ingress_host }}"
+              paths:
+                - /
+              pathType: Prefix
+              tls:
+                - secretName: prometheus-tls
+                  hosts:
+                    - "{{ prometheus_ingress_host }}"
+            prometheusSpec:
+              retention: 15d
+              # Adjust resources for homelab-scale
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  cpu: 1
+                  memory: 2Gi
+              storageSpec:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: "longhorn"
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 20Gi
+              # Scrape your own ServiceMonitors/PodMonitors without extra labels
+              serviceMonitorSelector: {}
+              serviceMonitorNamespaceSelector: {}
+              podMonitorSelector: {}
+              podMonitorNamespaceSelector: {}
+          alertmanager:
+            enabled: true
+            service:
+              type: ClusterIP
+              port: 9093
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              annotations:
+                cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                kubernetes.io/tls-acme: "true"
+              hosts:
+                - "{{ alertmanager_ingress_host }}"
+              path: /
+              pathType: Prefix
+              tls:
+                - secretName: alertmanager-tls
+                  hosts:
+                    - "{{ alertmanager_ingress_host }}"
+            alertmanagerSpec:
+              replicas: 1
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+              storage:
+                volumeClaimTemplate:
+                  spec:
+                    storageClassName: "longhorn"
+                    accessModes: ["ReadWriteOnce"]
+                    resources:
+                      requests:
+                        storage: 5Gi
+          prometheusOperator:
+            enabled: true
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+          kube-state-metrics:
+            enabled: true
+          nodeExporter:
+            enabled: true
+          ## Optional: enable ingress for thanos-query or other components later
+          ## thanosRuler:
+          ##   enabled: false
+
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        atomic: true
+        update_repo_cache: true

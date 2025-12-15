@@ -1,0 +1,185 @@
+---
+- name: Deploy Stirling PDF with Helm
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: "" # Set to your context if needed, else leave blank
+    deployment_namespace: "stirling-pdf"
+    stirling_ingress_host: "stirling-pdf.infra.k8s.slick.ge"
+    # Infisical configuration
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/stirling-pdf"
+
+  tasks:  
+    - name: Create stirling-pdf namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for Stirling PDF basic auth
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: stirling-pdf-auth
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: stirling-pdf-basic-auth
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    auth: "{{ '{{' }} .BASIC_AUTH.Value {{ '}}' }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Ensure stirling-pdf Helm repo is present
+      kubernetes.core.helm_repository:
+        name: stirling-pdf
+        repo_url: https://stirling-tools.github.io/Stirling-PDF-chart
+
+    - name: Deploy stirling-pdf via Helm
+      kubernetes.core.helm:
+        name: stirling-pdf
+        chart_ref: stirling-pdf/stirling-pdf-chart
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        values:
+          # Stirling PDF Helm chart values override for homelab
+          # Chart: stirling-pdf/stirling-pdf-chart
+          extraArgs: []
+          replicaCount: 1
+          strategy:
+            type: RollingUpdate
+          image:
+            registry: docker.stirlingpdf.com
+            repository: stirlingtools/stirling-pdf
+            tag: ""
+            sha: ""
+            pullPolicy: IfNotPresent
+          secret:
+            labels: {}
+          commonLabels: {}
+          rootPath: /
+          envs: []
+          envsFrom: []
+          deployment:
+            annotations: {}
+            labels: {}
+            extraVolumes: []
+            extraVolumeMounts: []
+            sidecarContainers: {}
+          podAnnotations: {}
+          podLabels: {}
+          service:
+            servicename: ""
+            type: ClusterIP
+            ipFamilyPolicy: ""
+            ipFamilies: []
+            externalTrafficPolicy: Local
+            loadBalancerIP: ""
+            loadBalancerSourceRanges: []
+            externalPort: 8080
+            targetPort: ""
+            nodePort: ""
+            annotations: {}
+            labels: {}
+          serviceMonitor:
+            enabled: false
+            labels: {}
+            metricsPath: "/metrics"
+          resources: {}
+          probes:
+            liveness:
+              enabled: true
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 1
+              successThreshold: 1
+              failureThreshold: 3
+            livenessHttpGetConfig:
+              scheme: HTTP
+            readiness:
+              enabled: true
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 1
+              successThreshold: 1
+              failureThreshold: 3
+            readinessHttpGetConfig:
+              scheme: HTTP
+          serviceAccount:
+            create: true
+            name: ""
+            automountServiceAccountToken: false
+            annotations: {}
+          securityContext:
+            enabled: true
+            fsGroup: 1000
+          containerSecurityContext: {}
+          priorityClassName: ""
+          nodeSelector: {}
+          tolerations: []
+          affinity: {}
+          persistence:
+            enabled: true
+            accessMode: ReadWriteOnce
+            size: 8Gi
+            labels: {}
+            path: /tmp
+            storageClass: "longhorn"
+          volumePermissions:
+            image:
+              registry: docker.io
+              repository: bitnami/minideb
+              tag: buster
+              pullPolicy: Always
+          ingress:
+            enabled: true
+            pathType: Prefix
+            labels: {}
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              kubernetes.io/tls-acme: "true"
+              nginx.ingress.kubernetes.io/auth-type: basic
+              nginx.ingress.kubernetes.io/auth-secret: stirling-pdf-basic-auth
+              nginx.ingress.kubernetes.io/auth-realm: "Authentication Required - Stirling PDF"
+            hosts:
+              - name: "{{ stirling_ingress_host }}"
+                path: /
+                tls: true
+                tlsSecret: stirling-pdf-tls
+            ingressClassName: nginx
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        atomic: true
+        update_repo_cache: true

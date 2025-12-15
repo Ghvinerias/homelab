@@ -1,0 +1,146 @@
+---
+- name: Deploy Portainer to Kubernetes
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    portainer_url: "pt.infra.k8s.slick.ge"
+    kube_context: ""
+    deployment_namespace: "portainer"
+
+
+  tasks:
+    - name: Create portainer namespace
+      kubernetes.core.k8s:
+        name: "{{ deployment_namespace }}"
+        api_version: v1
+        kind: Namespace
+        state: present
+
+    - name: Create ServiceAccount
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: portainer-sa-clusteradmin
+            namespace: portainer
+
+    - name: Create ClusterRoleBinding
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: portainer-crb-clusteradmin
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+          - kind: ServiceAccount
+            name: portainer-sa-clusteradmin
+            namespace: "{{ deployment_namespace }}"
+
+    - name: Create PVC
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: portainer-pvc
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi
+
+    - name: Deploy Portainer
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: portainer
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: portainer
+            template:
+              metadata:
+                labels:
+                  app: portainer
+              spec:
+                serviceAccountName: portainer-sa-clusteradmin
+                containers:
+                - name: portainer
+                  image: portainer/portainer-ce:latest
+                  ports:
+                  - containerPort: 9000
+                  - containerPort: 8000
+                  volumeMounts:
+                  - name: data
+                    mountPath: /data
+                  env:
+                  - name: PORTAINER_K8S_MODE
+                    value: "true"
+                volumes:
+                - name: data
+                  persistentVolumeClaim:
+                    claimName: portainer-pvc
+
+    - name: Create Service
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: portainer
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            type: ClusterIP
+            ports:
+            - port: 9000
+              targetPort: 9000
+              name: http
+            - port: 8000
+              targetPort: 8000
+              name: edge
+            selector:
+              app: portainer
+
+    - name: Create Ingress with SSL
+      kubernetes.core.k8s:
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: portainer-ingress
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              kubernetes.io/ingress.class: nginx
+              cert-manager.io/cluster-issuer: letsencrypt-prod
+              nginx.ingress.kubernetes.io/ssl-redirect: "true"
+              nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+          spec:
+            tls:
+            - hosts:
+              - "{{ portainer_url }}"
+              secretName: portainer-tls
+            rules:
+            - host: "{{ portainer_url }}"
+              http:
+                paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: portainer
+                      port:
+                        number: 9000
