@@ -47,6 +47,7 @@ terraform {
   }
 }
 
+
 #Hetzner Cloud related configs
 provider "hcloud" {
   token = data.bitwarden-secrets_secret.HETZER_API_TOKEN.value
@@ -80,7 +81,7 @@ variable "node_configs" {
       cloud_init_id    = "9f7efe03-5bf4-42a1-aaca-b36e00a7b177"
       node_internal_ip = "10.200.40.11"
       firewall_group   = "only-web-inbound"
-      wireguard_ip      = "10.0.1.3"
+      wireguard_ip     = "10.0.1.3"
     },
 
     {
@@ -88,14 +89,14 @@ variable "node_configs" {
       cloud_init_id    = "c2d9f592-d9b9-449d-879b-b36e00a80234"
       node_internal_ip = "10.200.40.21"
       firewall_group   = "block-all-inbound"
-      wireguard_ip      = "10.0.1.4"
+      wireguard_ip     = "10.0.1.4"
     },
     {
       name             = "worker-2"
       cloud_init_id    = "a3cc5397-d98c-42a0-9c9c-b36e00a8197c"
       node_internal_ip = "10.200.40.22"
       firewall_group   = "block-all-inbound"
-      wireguard_ip      = "10.0.1.5"
+      wireguard_ip     = "10.0.1.5"
     },
     #{
     #  name             = "worker-3"
@@ -146,8 +147,8 @@ resource "hcloud_server" "k8s_nodes" {
   ]
 
   labels = {
-    "cluster" = "k8s"
-    "role"    = startswith(each.key, "control") ? "control_plane" : "worker"
+    "cluster"    = "k8s"
+    "role"       = startswith(each.key, "control") ? "control_plane" : "worker"
     "managed_by" = "terraform"
   }
 }
