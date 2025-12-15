@@ -1,0 +1,124 @@
+---
+- name: Provision Infisical Operator with Kubernetes Auth
+  hosts: localhost
+  gather_facts: false
+  vars:
+    deployment_namespace: infisical
+
+  tasks:
+    - name: Add Infisical Helm repository
+      kubernetes.core.helm_repository:
+        name: infisical-helm-charts
+        repo_url: https://dl.cloudsmith.io/public/infisical/helm-charts/helm/charts/
+
+    - name: Install Infisical Operator via Helm
+      kubernetes.core.helm:
+        name: infisical-operator
+        chart_ref: infisical-helm-charts/secrets-operator
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        update_repo_cache: true
+
+    - name: Create infisical-token-reviewer ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: infisical-token-reviewer
+            namespace: "{{ deployment_namespace }}"
+
+    - name: Create infisical-token-reviewer-token Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: kubernetes.io/service-account-token
+          metadata:
+            name: infisical-token-reviewer-token
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              kubernetes.io/service-account.name: "infisical-token-reviewer"
+
+    - name: Create ClusterRoleBinding for token reviewer
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: infisical-token-reviewer-role-binding
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: system:auth-delegator
+          subjects:
+            - kind: ServiceAccount
+              name: infisical-token-reviewer
+              namespace: "{{ deployment_namespace }}"
+
+    - name: Create infisical-service-account ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: infisical-service-account
+            namespace: "{{ deployment_namespace }}"
+
+    - name: Create infisical-service-account-token Secret
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: kubernetes.io/service-account-token
+          metadata:
+            name: infisical-service-account-token
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              kubernetes.io/service-account.name: "infisical-service-account"
+
+    - name: Patch infisical-service-account to attach token
+      kubernetes.core.k8s:
+        state: patched
+        kind: ServiceAccount
+        namespace: "{{ deployment_namespace }}"
+        name: infisical-service-account
+        definition:
+          secrets:
+            - name: infisical-service-account-token
+
+    - name: Wait for token to be populated
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: "{{ deployment_namespace }}"
+        name: infisical-token-reviewer-token
+      register: token_secret
+      until: token_secret.resources[0].data.token is defined
+      retries: 10
+      delay: 2
+
+    - name: Retrieve token for Infisical machine identity
+      kubernetes.core.k8s_info:
+        kind: Secret
+        namespace: "{{ deployment_namespace }}"
+        name: infisical-token-reviewer-token
+      register: reviewer_token
+
+    - name: Display token (use this for Infisical machine identity)
+      debug:
+        msg: |
+          ===== JWT Token for Infisical Kubernetes Auth =====
+          {{ reviewer_token.resources[0].data.token | b64decode | replace('\\n', '\n') }}
+          ===================================================
+
+    - name: Display CA certificate (use this for Infisical machine identity)
+      debug:
+        msg: |
+          ===== CA Certificate for Infisical Kubernetes Auth =====
+          {{ reviewer_token.resources[0].data['ca.crt'] | b64decode | replace('\\n', '\n') }}
+          =========================================================
