@@ -1,0 +1,145 @@
+---
+- name: Provision Proxmox VMs for Kubernetes cluster
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    # - name: Create base VM
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm create 8000 --memory 2048 --core 2 --name ubuntu-cloud --net0 virtio,bridge=vmbr0
+
+    # - name: Import cloud image disk
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm disk import 8000 noble-server-cloudimg-amd64.img share-hdd
+
+    # - name: Attach imported disk
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm set 8000 --scsihw virtio-scsi-pci --scsi0 share-hdd:8000/vm-8000-disk-0.raw
+
+    # - name: Configure cloud-init drive
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm set 8000 --ide2 share-hdd:cloudinit
+
+    # - name: Set boot order
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm set 8000 --boot c --bootdisk scsi0
+
+    # - name: Configure serial console
+    #   delegate_to: dell-02
+    #   ansible.builtin.command: qm set 8000 --serial0 socket --vga serial0
+
+    - name: Clone k8s-mgmt-01
+      delegate_to: dell-02
+      ansible.builtin.command: qm clone 8000 4001 --name "k8s-mgmt-01" --full
+
+    - name: Clone k8s-node-01
+      delegate_to: dell-02
+      ansible.builtin.command: qm clone 8000 5001 --name "k8s-node-01" --full
+
+    - name: Clone k8s-node-02
+      delegate_to: dell-02
+      ansible.builtin.command: qm clone 8000 5002 --name "k8s-node-02" --full
+
+    - name: Clone k8s-node-03
+      delegate_to: dell-02
+      ansible.builtin.command: qm clone 8000 5003 --name "k8s-node-03" --full
+
+    - name: Clone k8s-node-04
+      delegate_to: dell-02
+      ansible.builtin.command: qm clone 8000 5004 --name "k8s-node-04" --full
+
+    - name: Migrate 5001 to dell-01
+      delegate_to: dell-02
+      ansible.builtin.command: qm migrate 5001 dell-01 --online 0
+
+    - name: Migrate 5003 to dell-03
+      delegate_to: dell-02
+      ansible.builtin.command: qm migrate 5003 dell-03 --online 0
+
+    - name: Migrate 4001 to pve
+      delegate_to: dell-02
+      ansible.builtin.command: qm migrate 4001 pve --online 0
+
+    - name: Migrate 5004 to pve
+      delegate_to: dell-02
+      ansible.builtin.command: qm migrate 5004 pve --online 0
+
+    - name: Move disk 5002
+      delegate_to: dell-02
+      ansible.builtin.command: qm move-disk 5002 scsi0 local-lvm
+
+    - name: Resize disk 5002
+      delegate_to: dell-02
+      ansible.builtin.command: qm resize 5002 scsi0 +50G
+
+    - name: Configure network 5002
+      delegate_to: dell-02
+      ansible.builtin.command: qm set 5002 -net0 virtio=52:54:00:BB:00:02,bridge=vmbr0,tag=1199
+
+    - name: Start 5002
+      delegate_to: dell-02
+      ansible.builtin.command: qm start 5002
+
+    - name: Move disk 5001
+      delegate_to: dell-01
+      ansible.builtin.command: qm move-disk 5001 scsi0 local-lvm
+
+    - name: Resize disk 5001
+      delegate_to: dell-01
+      ansible.builtin.command: qm resize 5001 scsi0 +50G
+
+    - name: Configure network 5001
+      delegate_to: dell-01
+      ansible.builtin.command: qm set 5001 -net0 virtio=52:54:00:BB:00:01,bridge=vmbr0,tag=1199
+
+    - name: Start 5001
+      delegate_to: dell-01
+      ansible.builtin.command: qm start 5001
+
+    - name: Move disk 5003
+      delegate_to: dell-03
+      ansible.builtin.command: qm move-disk 5003 scsi0 local-lvm
+
+    - name: Resize disk 5003
+      delegate_to: dell-03
+      ansible.builtin.command: qm resize 5003 scsi0 +50G
+
+    - name: Configure network 5003
+      delegate_to: dell-03
+      ansible.builtin.command: qm set 5003 -net0 virtio=52:54:00:BB:00:03,bridge=vmbr0,tag=1199
+
+    - name: Start 5003
+      delegate_to: dell-03
+      ansible.builtin.command: qm start 5003
+
+    - name: Move disk 4001
+      delegate_to: pve
+      ansible.builtin.command: qm move-disk 4001 scsi0 local-lvm
+
+    - name: Resize disk 4001
+      delegate_to: pve
+      ansible.builtin.command: qm resize 4001 scsi0 +50G
+
+    - name: Configure network 4001
+      delegate_to: pve
+      ansible.builtin.command: qm set 4001 -net0 virtio=52:54:00:AA:00:01,bridge=vmbr0,tag=1199
+
+    - name: Start 4001
+      delegate_to: pve
+      ansible.builtin.command: qm start 4001
+
+    - name: Move disk 5004
+      delegate_to: pve
+      ansible.builtin.command: qm move-disk 5004 scsi0 local-lvm
+
+    - name: Resize disk 5004
+      delegate_to: pve
+      ansible.builtin.command: qm resize 5004 scsi0 +50G
+
+    - name: Configure network 5004
+      delegate_to: pve
+      ansible.builtin.command: qm set 5004 -net0 virtio=52:54:00:BB:00:04,bridge=vmbr0,tag=1199
+
+    - name: Start 5004
+      delegate_to: pve
+      ansible.builtin.command: qm start 5004
