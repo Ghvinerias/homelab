@@ -10,10 +10,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - it-tools.k8s.slick.ge
+        - it-tools.infra.k8s.slick.ge
       secretName: it-tools-tls
   rules:
-    - host: it-tools.k8s.slick.ge
+    - host: it-tools.infra.k8s.slick.ge
       http:
         paths:
           - path: /
@@ -43,7 +43,7 @@ metadata:
   name: it-tools
   namespace: dev-tools
 spec:
-  replicas: 5
+  replicas: 2  # Initial replicas, HPA will adjust this
   selector:
     matchLabels:
       app: it-tools
@@ -57,3 +57,36 @@ spec:
           image: corentinth/it-tools:latest
           ports:
             - containerPort: 80
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: it-tools-hpa
+  namespace: dev-tools
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: it-tools
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
