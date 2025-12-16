@@ -226,7 +226,25 @@
       delay: 10
       run_once: true
       delegate_to: "{{ groups['control_plane'][0] }}"
+    
+    - name: Add metrics-server Helm repo
+      kubernetes.core.helm_repository:
+        name: metrics-server
+        repo_url: https://kubernetes-sigs.github.io/metrics-server/
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
 
+    - name: Deploy metrics-server via Helm
+      kubernetes.core.helm:
+        name: metrics-server
+        chart_ref: metrics-server/metrics-server
+        release_namespace: kube-system
+        values:
+          args:
+            - --kubelet-insecure-tls
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+    
     - name: Save and show join command
       ansible.builtin.shell: "kubeadm token create --print-join-command | tee /root/join.sh"
       args:
