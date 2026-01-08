@@ -1,0 +1,217 @@
+---
+- name: Deploy RabbitMQ with Cluster Operator
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: "" # Set to your context if needed, else leave blank
+    deployment_namespace: "messaging"
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/rabbitmq"
+    rabbitmq_ingress_host: "rabbitmq.infra.k8s.slick.ge"
+    rabbitmq_image: "rabbitmq:3.13-management"
+    rabbitmq_replicas: 3
+    storage_class: "longhorn"
+    storage_size: "2Gi"
+
+  tasks:
+    - name: Install RabbitMQ Cluster Operator
+      kubernetes.core.k8s:
+        state: present
+        src: "https://github.com/rabbitmq/cluster-operator/releases/latest/download/cluster-operator.yml"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create messaging namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for RabbitMQ credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: rabbitmq-auth
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: rabbitmq-auth
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    rabbitmq-username: "{{ '{{' }} .RABBITMQ_USERNAME.Value {{ '}}' }}"
+                    rabbitmq-password: "{{ '{{' }} .RABBITMQ_PASSWORD.Value {{ '}}' }}"
+                    rabbitmq-erlang-cookie: "{{ '{{' }} .RABBITMQ_ERLANG_COOKIE.Value {{ '}}' }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy RabbitMQ Cluster
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rabbitmq.com/v1beta1
+          kind: RabbitmqCluster
+          metadata:
+            name: rabbitmq
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            replicas: "{{ rabbitmq_replicas }}"
+            image: "{{ rabbitmq_image }}"
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: 1
+                memory: 2Gi
+            persistence:
+              storageClassName: "{{ storage_class }}"
+              storage: "{{ storage_size }}"
+            rabbitmq:
+              additionalPlugins:
+                - rabbitmq_prometheus
+              additionalConfig: |
+                prometheus.return_per_object_metrics = true
+            override:
+              statefulSet:
+                spec:
+                  template:
+                    metadata:
+                      annotations:
+                        prometheus.io/scrape: "true"
+                        prometheus.io/port: "15692"
+                    spec:
+                      containers:
+                        - name: rabbitmq
+                          env:
+                            - name: RABBITMQ_DEFAULT_USER
+                              valueFrom:
+                                secretKeyRef:
+                                  name: rabbitmq-auth
+                                  key: rabbitmq-username
+                            - name: RABBITMQ_DEFAULT_PASS
+                              valueFrom:
+                                secretKeyRef:
+                                  name: rabbitmq-auth
+                                  key: rabbitmq-password
+                            - name: RABBITMQ_ERLANG_COOKIE
+                              valueFrom:
+                                secretKeyRef:
+                                  name: rabbitmq-auth
+                                  key: rabbitmq-erlang-cookie
+            service:
+              type: ClusterIP
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create Ingress for RabbitMQ Management UI
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: rabbitmq-management
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+          spec:
+            ingressClassName: nginx
+            tls:
+              - hosts:
+                  - "{{ rabbitmq_ingress_host }}"
+                secretName: rabbitmq-tls
+            rules:
+              - host: "{{ rabbitmq_ingress_host }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: rabbitmq
+                          port:
+                            number: 15672
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create ServiceMonitor for RabbitMQ metrics
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: rabbitmq-metrics
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app.kubernetes.io/name: rabbitmq
+              release: kube-prometheus-stack
+          spec:
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: rabbitmq
+            endpoints:
+              - port: prometheus
+                interval: 30s
+                path: /metrics
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for RabbitMQ cluster to be ready
+      kubernetes.core.k8s_info:
+        kind: RabbitmqCluster
+        name: rabbitmq
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        wait_condition:
+          type: AllReplicasReady
+          status: "True"
+        wait_timeout: 300
+
+    - name: Get RabbitMQ default credentials
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: rabbitmq-default-user
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: rabbitmq_secret
+
+    - name: Display RabbitMQ access information
+      debug:
+        msg:
+          - "RabbitMQ Management UI: https://{{ rabbitmq_ingress_host }}"
+          - "Username: {{ rabbitmq_secret.resources[0].data.username | b64decode }}"
+          - "Password: {{ rabbitmq_secret.resources[0].data.password | b64decode }}"
+          - "AMQP URL: amqp://rabbitmq.{{ deployment_namespace }}.svc.cluster.local:5672"
