@@ -146,7 +146,7 @@
             defaultDataPath: /var/lib/longhorn
             # Performance tuning for smaller nodes
             storageOverProvisioningPercentage: 200
-            storageMinimalAvailablePercentage: 10
+            storageMinimalAvailablePercentage: 5
             # Auto-salvage and recovery
             autoSalvage: true
             autoDeletePodWhenVolumeDetachedUnexpectedly: true
