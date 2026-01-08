@@ -1,0 +1,210 @@
+---
+- name: Deploy Zabbix Server with Helm
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: "" # Set to your context if needed, else leave blank
+    deployment_namespace: "monitoring"
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/zabbix"
+    zabbix_ingress_host: "zabbix.infra.k8s.slick.ge"
+
+  tasks:
+    - name: Create monitoring namespace (if not exists)
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for Zabbix database credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: zabbix-db
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: zabbix-db
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    postgres-password: "{{ '{{' }} .ZABBIX_DB_PASSWORD.Value {{ '}}' }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for Zabbix admin credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: zabbix-admin
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: zabbix-admin
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    admin-password: "{{ '{{' }} .ZABBIX_ADMIN_PASSWORD.Value {{ '}}' }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Ensure zabbix-community Helm repo is present
+      kubernetes.core.helm_repository:
+        name: zabbix-community
+        repo_url: https://zabbix-community.github.io/helm-zabbix
+
+    - name: Deploy Zabbix via Helm
+      kubernetes.core.helm:
+        name: zabbix
+        chart_ref: zabbix-community/zabbix
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        values:
+          # Zabbix Helm chart values for homelab
+          # Chart: zabbix-community/zabbix
+          nameOverride: ""
+          fullnameOverride: ""
+          
+          # PostgreSQL database (bundled)
+          postgresql:
+            enabled: true
+            auth:
+              username: zabbix
+              database: zabbix
+              existingSecret: zabbix-db
+              secretKeys:
+                adminPasswordKey: postgres-password
+                userPasswordKey: postgres-password
+            primary:
+              persistence:
+                enabled: true
+                storageClass: "longhorn"
+                size: 20Gi
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 512Mi
+                limits:
+                  cpu: 1
+                  memory: 2Gi
+
+          # Zabbix Server
+          zabbixServer:
+            enabled: true
+            replicaCount: 1
+            service:
+              type: ClusterIP
+              port: 10051
+            resources:
+              requests:
+                cpu: 250m
+                memory: 512Mi
+              limits:
+                cpu: 1
+                memory: 2Gi
+            persistence:
+              enabled: true
+              storageClass: "longhorn"
+              size: 2Gi
+
+          # Zabbix Web (Frontend)
+          zabbixWeb:
+            enabled: true
+            service:
+              type: ClusterIP
+              port: 80
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              annotations:
+                cert-manager.io/cluster-issuer: "letsencrypt-prod"
+                kubernetes.io/tls-acme: "true"
+              hosts:
+                - host: "{{ zabbix_ingress_host }}"
+                  paths:
+                    - path: /
+                      pathType: Prefix
+              tls:
+                - secretName: zabbix-tls
+                  hosts:
+                    - "{{ zabbix_ingress_host }}"
+            resources:
+              requests:
+                cpu: 100m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
+            # Admin credentials
+            adminPassword:
+              existingSecret: zabbix-admin
+              existingSecretPasswordKey: admin-password
+
+          # Zabbix Agent
+          zabbixAgent:
+            enabled: true
+            service:
+              type: ClusterIP
+              port: 10050
+            resources:
+              requests:
+                cpu: 50m
+                memory: 128Mi
+              limits:
+                cpu: 200m
+                memory: 256Mi
+
+          # Zabbix Proxy (optional, disabled by default)
+          zabbixProxy:
+            enabled: false
+
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        atomic: true
+        update_repo_cache: true
