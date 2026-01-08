@@ -16,6 +16,7 @@
     grafana_ingress_host: "grafana.infra.k8s.slick.ge"
     prometheus_ingress_host: "prometheus.infra.k8s.slick.ge"
     alertmanager_ingress_host: "alertmanager.infra.k8s.slick.ge"
+    otel_collector_ingress_host: "otel.infra.k8s.slick.ge"
 
   tasks:
     - name: Create monitoring namespace
@@ -68,6 +69,11 @@
         name: prometheus-community
         repo_url: https://prometheus-community.github.io/helm-charts
 
+    - name: Ensure open-telemetry Helm repo is present
+      kubernetes.core.helm_repository:
+        name: open-telemetry
+        repo_url: https://open-telemetry.github.io/opentelemetry-helm-charts
+
     - name: Deploy kube-prometheus-stack via Helm
       kubernetes.core.helm:
         name: kube-prometheus-stack
@@ -82,6 +88,14 @@
           grafana:
             enabled: true
             defaultDashboardsEnabled: true
+            # Grafana plugins to install on startup
+            plugins:
+              - grafana-clock-panel
+              - grafana-simple-json-datasource
+              - grafana-piechart-panel
+              - alexanderzobnin-zabbix-app
+              - fetzerch-sunandmoon-datasource
+              # Add more plugins as needed
             # Use an existing secret for admin credentials to avoid committing secrets
             admin:
               existingSecret: grafana-admin
@@ -133,6 +147,8 @@
                     - "{{ prometheus_ingress_host }}"
             prometheusSpec:
               retention: 15d
+              # Enable remote write receiver for OTEL
+              enableRemoteWriteReceiver: true
               # Adjust resources for homelab-scale
               resources:
                 requests:
@@ -148,7 +164,7 @@
                     accessModes: ["ReadWriteOnce"]
                     resources:
                       requests:
-                        storage: 20Gi
+                        storage: 4Gi
               # Scrape your own ServiceMonitors/PodMonitors without extra labels
               serviceMonitorSelector: {}
               serviceMonitorNamespaceSelector: {}
@@ -212,3 +228,128 @@
         wait: true
         atomic: true
         update_repo_cache: true
+
+    - name: Deploy OpenTelemetry Collector via Helm
+      kubernetes.core.helm:
+        name: opentelemetry-collector
+        chart_ref: open-telemetry/opentelemetry-collector
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        values:
+          mode: daemonset
+          
+          # Host network for direct access on node IPs
+          hostNetwork: true
+          dnsPolicy: ClusterFirstWithHostNet
+          
+          # Image configuration (required)
+          image:
+            repository: otel/opentelemetry-collector-contrib
+            tag: 0.115.1
+          
+          # Allow scheduling on control-plane nodes
+          tolerations:
+            - key: "node-role.kubernetes.io/control-plane"
+              operator: "Exists"
+              effect: "NoSchedule"
+            - key: "node-role.kubernetes.io/master"
+              operator: "Exists"
+              effect: "NoSchedule"
+          
+          # Resource limits for homelab
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          
+          # Service configuration - LoadBalancer to expose externally
+          service:
+            type: LoadBalancer
+          
+          # Ports for OTLP receivers
+          ports:
+            otlp:
+              enabled: true
+              containerPort: 4317
+              servicePort: 4317
+              hostPort: 4317
+              protocol: TCP
+            otlp-http:
+              enabled: true
+              containerPort: 4318
+              servicePort: 4318
+              hostPort: 4318
+              protocol: TCP
+            metrics:
+              enabled: true
+              containerPort: 8888
+              servicePort: 8888
+              protocol: TCP
+          
+          # OpenTelemetry Collector configuration
+          config:
+            receivers:
+              otlp:
+                protocols:
+                  grpc:
+                    endpoint: 0.0.0.0:4317
+                  http:
+                    endpoint: 0.0.0.0:4318
+            
+            processors:
+              batch:
+                timeout: 10s
+                send_batch_size: 1024
+              memory_limiter:
+                check_interval: 5s
+                limit_mib: 400
+            
+            exporters:
+              # Export metrics to Prometheus
+              prometheus:
+                endpoint: 0.0.0.0:8889
+                namespace: otel
+              
+              # Export metrics via remote write to Prometheus
+              prometheusremotewrite:
+                endpoint: http://kube-prometheus-stack-prometheus.{{ deployment_namespace }}.svc.cluster.local:9090/api/v1/write
+                tls:
+                  insecure: true
+              
+              # Export logs to Loki
+              loki:
+                endpoint: http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push
+                tls:
+                  insecure: true
+              
+              # Debug exporter for troubleshooting
+              debug:
+                verbosity: normal
+            
+            service:
+              pipelines:
+                traces:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [debug]
+                metrics:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [prometheus, prometheusremotewrite]
+                logs:
+                  receivers: [otlp]
+                  processors: [memory_limiter, batch]
+                  exporters: [loki, debug]
+          
+          # ServiceMonitor for Prometheus to scrape otel collector metrics
+          serviceMonitor:
+            enabled: true
+            additionalLabels:
+              release: kube-prometheus-stack
+        
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true

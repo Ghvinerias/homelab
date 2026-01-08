@@ -51,18 +51,18 @@
               - key: "node-role.kubernetes.io/master"
                 operator: "Exists"
                 effect: "NoSchedule"
-          ## Uncomment to enable monitoring of ingress-nginx, but prometheus needs to be provisioned first
-          ## See k8s/gp/README.md for instructions
-          # metrics:
-          #   enabled: true
-          #   service:
-          #     enabled: true
-          #   serviceMonitor:
-          #     enabled: true
-          #     namespace: monitoring
-          #     scrapeInterval: 30s
-          #     # No selector labels required since Prometheus in kube-prometheus-stack is set to scrape all ServiceMonitors
-          #     additionalLabels: {}
+          # Uncomment to enable monitoring of ingress-nginx, but prometheus needs to be provisioned first
+          # See k8s/gp/README.md for instructions
+          metrics:
+            enabled: true
+            service:
+              enabled: true
+            serviceMonitor:
+              enabled: true
+              namespace: monitoring
+              scrapeInterval: 30s
+              # No selector labels required since Prometheus in kube-prometheus-stack is set to scrape all ServiceMonitors
+              additionalLabels: {}
           
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
