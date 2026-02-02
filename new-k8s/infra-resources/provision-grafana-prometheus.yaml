@@ -18,7 +18,24 @@
     alertmanager_ingress_host: "alertmanager.infra.k8s.slick.ge"
     otel_collector_ingress_host: "otel.infra.k8s.slick.ge"
 
+    # Optional: Enable and define external node_exporter hosts
+    enable_external_nodeexporter: true
+    external_nodeexporter_targets:
+      - "10.10.10.13:9400"
+      - "10.10.10.13:9100"
+      - "10.10.10.13:9835"
+
   tasks:
+    # Inline additionalScrapeConfigs for external node_exporter hosts
+    - name: Set additional scrape configs for external node_exporters
+      set_fact:
+        external_additional_scrape_configs:
+          - job_name: 'external-node-exporters'
+            scheme: http
+            metrics_path: /metrics
+            static_configs:
+              - targets: "{{ external_nodeexporter_targets }}"
+      when: enable_external_nodeexporter
     - name: Create monitoring namespace
       kubernetes.core.k8s:
         state: present
@@ -78,6 +95,7 @@
       kubernetes.core.helm:
         name: kube-prometheus-stack
         chart_ref: prometheus-community/kube-prometheus-stack
+        timeout: 10m
         release_namespace: "{{ deployment_namespace }}"
         create_namespace: true
         values:
@@ -170,6 +188,8 @@
               serviceMonitorNamespaceSelector: {}
               podMonitorSelector: {}
               podMonitorNamespaceSelector: {}
+              # Optionally add additional scrape configs for external node_exporters
+              additionalScrapeConfigs: "{{ external_additional_scrape_configs | default([]) | to_nice_yaml }}"
           alertmanager:
             enabled: true
             service:
