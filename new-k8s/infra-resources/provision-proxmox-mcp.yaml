@@ -1,0 +1,245 @@
+---
+- name: Deploy Proxmox MCP API with direct manifests
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: "" # Set to your context if needed, else leave blank
+    deployment_namespace: "proxmox-mcp"
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/proxmox-mcp"
+    proxmoxmcp_ingress_host: "proxmoxmcp.infra.k8s.slick.ge"
+
+  tasks:
+    - name: Ensure namespace exists
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create InfisicalSecret for Proxmox MCP credentials
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: secrets.infisical.com/v1alpha1
+          kind: InfisicalSecret
+          metadata:
+            name: proxmox-mcp-config
+            namespace: "{{ deployment_namespace }}"
+          spec:
+            hostAPI: "{{ infisical_host_api }}"
+            resyncInterval: 10
+            authentication:
+              kubernetesAuth:
+                identityId: "{{ identity_id }}"
+                serviceAccountRef:
+                  name: infisical-service-account
+                  namespace: infisical
+                secretsScope:
+                  envSlug: "{{ env_slug }}"
+                  projectSlug: "{{ project_slug }}"
+                  secretsPath: "{{ secrets_path }}"
+            managedKubeSecretReferences:
+              - secretName: proxmox-credentials
+                secretNamespace: "{{ deployment_namespace }}"
+                creationPolicy: Orphan
+                template:
+                  includeAllSecrets: false
+                  data:
+                    config.json: |
+                      {
+                        "proxmox": {
+                          "host": "{{ '{{' }} .PROXMOX_HOST.Value {{ '}}' }}",
+                          "port": {{ '{{' }} .PROXMOX_PORT.Value {{ '}}' }},
+                          "verify_ssl": {{ '{{' }} .PROXMOX_VERIFY_SSL.Value {{ '}}' }},
+                          "service": "{{ '{{' }} .PROXMOX_SERVICE.Value {{ '}}' }}"
+                        },
+                        "auth": {
+                          "user": "{{ '{{' }} .PROXMOX_USER.Value {{ '}}' }}",
+                          "token_name": "{{ '{{' }} .PROXMOX_TOKEN_NAME.Value {{ '}}' }}",
+                          "token_value": "{{ '{{' }} .PROXMOX_TOKEN_VALUE.Value {{ '}}' }}"
+                        },
+                        "logging": {
+                          "level": "INFO",
+                          "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                        },
+                        "mcp": {
+                          "host": "0.0.0.0",
+                          "port": 8811,
+                          "transport": "Streamable"
+                        }
+                      }
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy Proxmox MCP API Deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: proxmox-mcp-api
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app: proxmox-mcp-api
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: proxmox-mcp-api
+            template:
+              metadata:
+                labels:
+                  app: proxmox-mcp-api
+              spec:
+                containers:
+                  - name: proxmox-mcp-api
+                    image: slickg/proxmox-mcp:latest
+                    imagePullPolicy: Always
+                    command: ["/bin/bash", "-c", "cd /app && source .venv/bin/activate && python -m proxmox_mcp.server --transport streamable"]
+                    ports:
+                      - containerPort: 8811
+                        name: http
+                    env:
+                      - name: LOG_LEVEL
+                        value: "INFO"
+                      - name: PROXMOX_MCP_CONFIG
+                        value: "/app/proxmox-config/config.json"
+                      - name: API_HOST
+                        value: "0.0.0.0"
+                      - name: API_PORT
+                        value: "8811"
+                    volumeMounts:
+                      - name: config
+                        mountPath: /app/proxmox-config
+                        readOnly: true
+                    resources:
+                      requests:
+                        cpu: 100m
+                        memory: 128Mi
+                      limits:
+                        cpu: 500m
+                        memory: 512Mi
+                      # No livenessProbe or readinessProbe: /health endpoint not present
+                volumes:
+                  - name: config
+                    secret:
+                      secretName: proxmox-credentials
+                      items:
+                        - key: config.json
+                          path: config.json
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy Proxmox MCP API Service 8811
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: proxmox-mcp-api
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app: proxmox-mcp-api
+          spec:
+            type: ClusterIP
+            ports:
+              - port: 8811
+                targetPort: 8811
+                protocol: TCP
+                name: http
+            selector:
+              app: proxmox-mcp-api
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy Proxmox MCP API Service 8810
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: proxmox-mcp-api
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app: proxmox-mcp-api
+          spec:
+            type: ClusterIP
+            ports:
+              - port: 8810
+                targetPort: 8810
+                protocol: TCP
+                name: http
+            selector:
+              app: proxmox-mcp-api
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy Proxmox MCP API Ingress
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: proxmox-mcp-api
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              kubernetes.io/ingress.class: nginx
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              kubernetes.io/tls-acme: "true"
+          spec:
+            ingressClassName: nginx
+            rules:
+              - host: "{{ proxmoxmcp_ingress_host }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: proxmox-mcp-api
+                          port:
+                            number: 8811
+            tls:
+              - secretName: proxmox-mcp-tls
+                hosts:
+                  - "{{ proxmoxmcp_ingress_host }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for Proxmox MCP API deployment to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ deployment_namespace }}"
+        name: proxmox-mcp-api
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: proxmoxmcp_deployment
+      until: proxmoxmcp_deployment.resources[0].status.availableReplicas | default(0) >= 1
+      retries: 30
+      delay: 10
+
+    - name: Display Proxmox MCP API access information
+      debug:
+        msg:
+          - "✅ Proxmox MCP API deployed successfully!"
+          - ""
+          - "📊 Access Information:"
+          - "  - Web UI: https://{{ proxmoxmcp_ingress_host }}"
+          - "  - Internal Service: proxmox-mcp-api.{{ deployment_namespace }}.svc.cluster.local"
+          - ""
+          - "🔐 Credentials stored in secret: proxmox-credentials"
