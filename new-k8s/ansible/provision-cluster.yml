@@ -355,7 +355,7 @@
       run_once: true
       delegate_to: localhost
       when: setup_local_kubeconfig | default(false) | bool
-    
+       
 # Join additional control-plane nodes
 - name: Join additional control-plane nodes to the cluster
   hosts: control_plane
