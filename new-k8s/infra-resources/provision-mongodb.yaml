@@ -17,7 +17,7 @@
     mongodb_version: "6.0.5"
     mongodb_replicas: 3
     storage_class: "longhorn"
-    storage_size: "5Gi"
+    storage_size: "2Gi"  # Reduced from 5Gi due to limited Longhorn storage
     mongodb_nodeport: 30017  # External port for MongoDB access
 
   tasks:
@@ -29,6 +29,106 @@
           kind: Namespace
           metadata:
             name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Operator ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: mongodb-kubernetes-operator
+            namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Database ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: mongodb-database
+            namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Database Role
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: mongodb-database
+            namespace: "{{ deployment_namespace }}"
+          rules:
+          - apiGroups: [""]
+            resources: ["secrets", "configmaps", "pods", "services"]
+            verbs: ["get", "list", "watch", "patch", "update"]
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Database RoleBinding
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: mongodb-database
+            namespace: "{{ deployment_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: mongodb-database
+          subjects:
+          - kind: ServiceAccount
+            name: mongodb-database
+            namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Operator ClusterRole
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: mongodb-kubernetes-operator
+          rules:
+          - apiGroups: [""]
+            resources: ["pods", "services", "endpoints", "persistentvolumeclaims", "events", "configmaps", "secrets"]
+            verbs: ["*"]
+          - apiGroups: ["apps"]
+            resources: ["deployments", "daemonsets", "replicasets", "statefulsets"]
+            verbs: ["*"]
+          - apiGroups: ["mongodbcommunity.mongodb.com"]
+            resources: ["mongodbcommunity", "mongodbcommunity/status", "mongodbcommunity/spec", "mongodbcommunity/finalizers"]
+            verbs: ["*"]
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create MongoDB Operator ClusterRoleBinding
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: mongodb-kubernetes-operator
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: mongodb-kubernetes-operator
+          subjects:
+          - kind: ServiceAccount
+            name: mongodb-kubernetes-operator
+            namespace: "{{ deployment_namespace }}"
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
@@ -267,7 +367,11 @@
                             name: mongodb-auth
                             key: password
                       - name: ME_CONFIG_MONGODB_SERVER
-                        value: "mongodb-svc.{{ deployment_namespace }}.svc.cluster.local"
+                        value: "mongodb-0.mongodb-svc.{{ deployment_namespace }}.svc.cluster.local,mongodb-1.mongodb-svc.{{ deployment_namespace }}.svc.cluster.local,mongodb-2.mongodb-svc.{{ deployment_namespace }}.svc.cluster.local"
+                      - name: ME_CONFIG_MONGODB_PORT
+                        value: "27017"
+                      - name: ME_CONFIG_MONGODB_AUTH_DATABASE
+                        value: admin
                       - name: ME_CONFIG_BASICAUTH_USERNAME
                         valueFrom:
                           secretKeyRef:
