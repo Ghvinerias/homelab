@@ -1,60 +1,68 @@
-## Repo overview (big picture)
 
-- This repository contains infrastructure and app artifacts for a personal homelab. Key areas:
-  - `Ansible/` — primary place for host configuration, roles, and playbooks (see `Ansible/playbooks/site.yml`, `Ansible/deploy-alloy.yml`).
-  - `GKE/` — Kubernetes manifests and examples (e.g. `GKE/free-boi/examples/`).
-  - `media-automation/` — docker-compose workloads for media services (`docker-compose.yml`).
-  - `swiss-army-container/` — convenience Docker image and runtime notes (see `Dockerfile`, README).
-  - `hetzner/Ansible/` — provider-specific Ansible playbooks and third-party roles (geerlingguy.*).
+# AI Agent Coding Instructions for Homelab
 
-Focus: when modifying code, consider whether changes are infrastructure (Ansible/Terraform/K8s), container images, or local automation scripts; each live in their own top-level folder.
+## Architecture Overview
 
-## Developer workflows & key commands
+This repository manages a personal homelab using infrastructure-as-code and automation. Major components:
 
-- Ansible (main workflows):
-  - Install roles: `ansible-galaxy install -r Ansible/requirements.yml`
-  - Run main playbook: `ansible-playbook Ansible/playbooks/site.yml --ask-vault-pass`
-  - Deploy Alloy: `ansible-playbook Ansible/playbooks/deploy-alloy.yml --ask-vault-pass`
-  - Dry-run: append `--check` to any `ansible-playbook` command.
-  - Config: `Ansible/ansible.cfg` sets `inventory = inventory.yml`, `roles_path = roles`, `vault_password_file = .vault_pass` and `stdout_callback = yaml`.
+- **Ansible/**: Host configuration, roles, and playbooks. Main entry: `Ansible/playbooks/site.yml`.
+- **media-automation/**: Docker Compose workloads for media services (`docker-compose.yml`).
+- **swiss-army-container/**: Custom Docker image bundling CLI tools, with Bitwarden integration for secrets.
+- **hetzner/terraform/**: Terraform stack for Hetzner/Cloudflare networking, DNS, and secrets. Bootstraps Ansible.
+- **k8s/**: Kubernetes manifests, Helm values, and deployment guides (see `k8s/gp/README.md` for monitoring stack).
 
-- Docker / compose:
-  - Start media services: `docker compose -f media-automation/docker-compose.yml up -d`
-  - Swiss-army-container quick-run example is in `swiss-army-container/README.md` (single-line `docker run ...` invocation).
+**Key principle:** Each top-level folder is a boundary for a major system (infra, containers, automation). Changes should respect these boundaries.
 
-- Kubernetes (GKE):
-  - Manifests and examples are under `GKE/free-boi/` — apply with `kubectl apply -f <file>` against your kubecontext.
+## Developer Workflows
 
-## Project-specific conventions and patterns
+**Ansible:**
+- Install roles: `ansible-galaxy install -r Ansible/requirements.yml`
+- Run main playbook: `ansible-playbook Ansible/playbooks/site.yml --ask-vault-pass`
+- Dry-run: add `--check` to any playbook command
+- Vault: Use `--ask-vault-pass` or `.vault_pass` (never commit `.vault_pass`)
 
-- Ansible inventory and secrets:
-  - Inventory is YAML (`Ansible/inventory.yml`). Host capabilities are expressed as host vars (example: `has_docker: true`, `has_nginx: false`) — playbooks/roles read those to conditionally assemble configs (see `roles/alloy_config/`).
-  - Vault usage is expected: either `--ask-vault-pass` or `.vault_pass` (but `.vault_pass` should be gitignored).
+**Terraform (Hetzner/Cloudflare):**
+- From `hetzner/terraform/`: `tofu init`, `tofu plan`, `tofu apply`
+- Providers: Hetzner, Cloudflare, Bitwarden, Kubernetes, Helm
+- Bitwarden secrets: Use environment variables, never commit secrets
 
-- Role/layout:
-  - Custom roles live in `Ansible/roles/` and follow Ansible role structure (tasks/handlers/templates/vars). When adding roles, register them in `requirements.yml` and document any host variables needed.
+**Docker/Compose:**
+- Start media stack: `docker compose -f media-automation/docker-compose.yml up -d`
+- Build Swiss Army image: `docker build -t slickg/swiss-army-container:dev ./swiss-army-container`
+- Run Swiss Army container: see `swiss-army-container/README.md` for full example and env vars
 
-- Secrets & external integrations:
-  - Bitwarden is used for runtime secrets in `swiss-army-container` (environment variable names and secret IDs documented in that README). Media automation services expect RabbitMQ env vars in `media-automation/docker-compose.yml`.
+**Kubernetes:**
+- Deploy monitoring: see `k8s/gp/README.md` (namespace, secrets, Helm install, ingress)
+- General manifests: `kubectl apply -f <file>`
 
-## Integration points & chokepoints to watch
+## Project Conventions & Patterns
 
-- SSH and vault: many Ansible tasks assume SSH connectivity and that vault secrets are available. If a change touches authentication, update `Ansible/ansible.cfg` expectations and README steps.
-- Container images: `swiss-army-container/Dockerfile` and any `slickg/*` images referenced in `docker-compose.yml` are built/hosted externally — confirm image names/tags when updating runtime behavior.
+- **Ansible inventory:** YAML (`Ansible/inventory.yml`), host vars like `has_docker`/`has_nginx` control role inclusion
+- **Secrets:** Bitwarden for secrets (see env vars in `swiss-army-container/README.md`), Ansible Vault for playbooks
+- **Roles:** Custom roles in `Ansible/roles/`, register in `requirements.yml`, document required host vars
+- **Terraform:** Use Bitwarden provider for secrets, never hardcode
+- **K8s:** Monitoring stack expects ingress/cert-manager, domains in `values.yaml`
 
-## What a helpful AI agent can do here
+## Integration Points & Chokepoints
 
-- When changing Ansible code: search for usages of host vars (e.g., `has_docker`) and update `roles/alloy_config/` templates consistently. Provide suggested `ansible-playbook` test commands including `--limit` and `--check`.
-- When changing container images: update the matching README snippet in `swiss-army-container/README.md` and add a short build example (`docker build -t slickg/swiss-army-container:dev ./swiss-army-container`).
-- When touching K8s manifests: point to `GKE/free-boi/examples/` and recommend `kubectl --context <ctx> apply -f` plus a brief rollout/status check.
+- **SSH & Vault:** Ansible assumes SSH and vault access; update `ansible.cfg` and docs if auth changes
+- **Container images:** Update image tags in compose and docs when changing images
+- **Secrets:** Never commit secrets; always use Bitwarden or Vault references
+- **K8s ingress/cert-manager:** Monitoring stack requires working ingress and cert-manager (see `k8s/gp/README.md`)
 
-## Quick references (paths & examples)
+## AI Agent Guidance
 
-- Main playbooks: `Ansible/playbooks/site.yml`, `Ansible/playbooks/deploy-alloy.yml`
-- Ansible config: `Ansible/ansible.cfg`
-- Inventory & group vars: `Ansible/inventory.yml`, `Ansible/group_vars/` (see `all.yml`, `alloy.yml`)
-- Media compose: `media-automation/docker-compose.yml`
-- Swiss container README and Dockerfile: `swiss-army-container/README.md`, `swiss-army-container/Dockerfile`
-- K8s examples: `GKE/free-boi/examples/`
+- When editing Ansible, search for host vars (e.g., `has_docker`) and update templates/roles consistently
+- When changing container images, update `swiss-army-container/README.md` and add build/run examples
+- When editing K8s manifests, reference `k8s/gp/README.md` for monitoring, and `GKE/free-boi/examples/` for GKE
+- For Terraform, ensure Bitwarden secrets are referenced, not hardcoded
+- Suggest test/dry-run commands for all infra changes
 
-If any of these areas are incomplete or you'd like the instructions to emphasize another workflow (e.g., Terraform or cloud provider deployment), tell me which area to expand and I will iterate.
+## Key References
+
+- Ansible: `Ansible/playbooks/site.yml`, `Ansible/ansible.cfg`, `Ansible/inventory.yml`, `Ansible/group_vars/`
+- Terraform: `hetzner/terraform/README.md`, `hetzner/terraform/main.tf`
+- Docker: `media-automation/docker-compose.yml`, `swiss-army-container/README.md`, `swiss-army-container/Dockerfile`
+- K8s: `k8s/gp/README.md`, `k8s/gp/values.yaml`, `k8s/gp/namespace.yaml`
+
+If you need more detail on any workflow or integration, ask for clarification or check the relevant README.
