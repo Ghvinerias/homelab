@@ -61,6 +61,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for jenkins-admin Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: jenkins-admin
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: jenkins_secret
+      until: jenkins_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: jenkins_secret.resources | length == 0
+
     - name: Ensure jenkins Helm repo is present
       kubernetes.core.helm_repository:
         name: jenkins

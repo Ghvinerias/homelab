@@ -73,6 +73,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for rabbitmq-auth Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: rabbitmq-auth
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: rabbitmq_secret_status
+      until: rabbitmq_secret_status.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: rabbitmq_secret_status.resources | length == 0
+
     - name: Deploy RabbitMQ Cluster
       kubernetes.core.k8s:
         state: present

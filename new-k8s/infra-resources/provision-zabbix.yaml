@@ -60,6 +60,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for zabbix-db Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: zabbix-db
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: zabbix_db_secret
+      until: zabbix_db_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: zabbix_db_secret.resources | length == 0
+
     - name: Create InfisicalSecret for Zabbix admin credentials
       kubernetes.core.k8s:
         state: present
@@ -92,6 +105,19 @@
                     admin-password: "{{ '{{' }} .ZABBIX_ADMIN_PASSWORD.Value {{ '}}' }}"
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for zabbix-admin Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: zabbix-admin
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: zabbix_admin_secret
+      until: zabbix_admin_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: zabbix_admin_secret.resources | length == 0
 
     - name: Ensure zabbix-community Helm repo is present
       kubernetes.core.helm_repository:

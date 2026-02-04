@@ -121,6 +121,32 @@
                   data:
                     auth: "{{ '{{' }} .LONGHORN_UI_AUTH.Value {{ '}}' }}"
 
+    - name: Wait for longhorn-s3-auth Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: longhorn-s3-auth
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: longhorn_s3_secret
+      until: longhorn_s3_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: longhorn_s3_secret.resources | length == 0
+
+    - name: Wait for longhorn-auth-id Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: longhorn-auth-id
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: longhorn_auth_secret
+      until: longhorn_auth_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: longhorn_auth_secret.resources | length == 0
+
     - name: Deploy Longhorn via Helm
       kubernetes.core.helm:
         name: longhorn

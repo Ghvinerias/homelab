@@ -61,6 +61,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for stirling-pdf-basic-auth Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: stirling-pdf-basic-auth
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: stirling_secret
+      until: stirling_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: stirling_secret.resources | length == 0
+
     - name: Ensure stirling-pdf Helm repo is present
       kubernetes.core.helm_repository:
         name: stirling-pdf
