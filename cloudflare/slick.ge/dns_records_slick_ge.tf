@@ -3,9 +3,36 @@ resource "cloudflare_record" "slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7
   zone_id = cloudflare_zone.slick_ge.id
   name    = "cloud.slick.ge"
   type    = "A"
-  content   = "134.19.242.18"
+  content   = data.bitwarden-secrets_secret.slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7c9cb85_ip.value
+  ttl     = 1
+  proxied = true
+}
+# record_id: 56ddc1b8d046ddee50c7b60afac4f48c
+resource "cloudflare_record" "slick_ge_wildcard_cloud_slick_ge_56ddc1b8d046ddee50c7b60afac4f48c" {
+  zone_id = cloudflare_zone.slick_ge.id
+  name    = "*.cloud.slick.ge"
+  type    = "CNAME"
+  content   = "cloud.slick.ge"
   ttl     = 1
   proxied = false
+}
+
+resource "cloudflare_record" "slick_ge_k8s_cloud_slick_ge" {
+  zone_id = cloudflare_zone.slick_ge.id
+  name    = "k8s.cloud.slick.ge"
+  type    = "A"
+  content   = data.bitwarden-secrets_secret.slick_ge_k8s_cloud_slick_ge_ip.value
+  ttl     = 1
+  proxied = false
+}
+# record_id: 56ddc1b8d046ddee50c7b60afac4f48c
+resource "cloudflare_record" "slick_ge_wildcard_k8s_cloud_slick_ge" {
+  zone_id = cloudflare_zone.slick_ge.id
+  name    = "*.k8s.cloud.slick.ge"
+  type    = "CNAME"
+  content   = "k8s.cloud.slick.ge"
+  ttl     = 1
+  proxied = true
 }
 
 # record_id: 697591ad43036c56b3530335c311fe82
@@ -13,7 +40,7 @@ resource "cloudflare_record" "slick_ge_varagaradu_slick_ge_697591ad43036c56b3530
   zone_id = cloudflare_zone.slick_ge.id
   name    = "varagaradu.slick.ge"
   type    = "A"
-  content   = "134.19.242.18"
+  content   = data.bitwarden-secrets_secret.slick_ge_varagaradu_slick_ge_697591ad43036c56b3530335c311fe82_ip.value
   ttl     = 1
   proxied = false
 }
@@ -38,15 +65,7 @@ resource "cloudflare_record" "slick_ge_auth_slick_ge_8beb24b9a45e0aa88e556112527
   proxied = false
 }
 
-# record_id: 56ddc1b8d046ddee50c7b60afac4f48c
-resource "cloudflare_record" "slick_ge_wildcard_cloud_slick_ge_56ddc1b8d046ddee50c7b60afac4f48c" {
-  zone_id = cloudflare_zone.slick_ge.id
-  name    = "*.cloud.slick.ge"
-  type    = "CNAME"
-  content   = "cloud.slick.ge"
-  ttl     = 1
-  proxied = false
-}
+
 
 # record_id: bbb2a244bc5c3d7e0b266226de5c1940
 resource "cloudflare_record" "slick_ge_em543_slick_ge_bbb2a244bc5c3d7e0b266226de5c1940" {
@@ -117,16 +136,6 @@ resource "cloudflare_record" "slick_ge_s2__domainkey_slick_ge_7da3589d3625e96c0c
   ttl     = 1
   proxied = false
 }
-
-# record_id: 1641fc157a2a839eb55834d2c6917180
-# NOTE: The following DNS records are managed by Cloudflare services and cannot be edited via Terraform:
-#
-# 1. s3.slick.ge (CNAME) - Managed by R2 configuration
-# 2. slick.ge MX records (3 records) - Managed by Email Routing
-# 3. cf2024-1._domainkey.slick.ge (TXT/DKIM) - Managed by Email Routing
-#
-# These records are automatically created and maintained by their respective Cloudflare services.
-# To modify them, use the Cloudflare dashboard for the specific service (R2 or Email Routing).
 
 # record_id: 3e841163ed071d795fe41a0f74ed14f1
 resource "cloudflare_record" "slick_ge__dmarc_slick_ge_3e841163ed071d795fe41a0f74ed14f1" {

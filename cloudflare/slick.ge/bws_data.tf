@@ -36,3 +36,12 @@ data "bitwarden-secrets_secret" "d8cf1c43be5a4e8ebfdfb37f014b9281" {
 data "bitwarden-secrets_secret" "fa674bfb94baf8edcb37f014c1579" {
   id = "512fa674-bfb9-4baf-8edc-b37f014c1579"
 }
+data "bitwarden-secrets_secret" "slick_ge_k8s_cloud_slick_ge_ip" {
+  id = "6fc0d5ac-366a-418f-9c36-b3e7008ca62d"
+}
+data "bitwarden-secrets_secret" "slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7c9cb85_ip" {
+  id = "88f7fd90-892c-4a9a-a074-b3e7008caf57"
+}
+data "bitwarden-secrets_secret" "slick_ge_varagaradu_slick_ge_697591ad43036c56b3530335c311fe82_ip" {
+  id = "494cbaa2-3a88-42cc-ac3c-b3e7008d99c1"
+}
