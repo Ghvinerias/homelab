@@ -82,6 +82,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for proxmox-credentials Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: proxmox-credentials
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: proxmox_secret
+      until: proxmox_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: proxmox_secret.resources | length == 0
+
     - name: Deploy Proxmox MCP API Deployment
       kubernetes.core.k8s:
         state: present

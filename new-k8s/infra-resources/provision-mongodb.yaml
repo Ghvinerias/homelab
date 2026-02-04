@@ -181,6 +181,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for mongodb-auth Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: mongodb-auth
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: mongodb_secret
+      until: mongodb_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: mongodb_secret.resources | length == 0
+
     - name: Deploy MongoDB Replica Set
       kubernetes.core.k8s:
         state: present
@@ -333,6 +346,19 @@
                     password: "{{ '{{' }} .MONGO_EXPRESS_PASSWORD.Value {{ '}}' }}"
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for mongo-express-auth Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: mongo-express-auth
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: mongo_express_secret
+      until: mongo_express_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: mongo_express_secret.resources | length == 0
 
     - name: Deploy Mongo Express Web UI
       kubernetes.core.k8s:

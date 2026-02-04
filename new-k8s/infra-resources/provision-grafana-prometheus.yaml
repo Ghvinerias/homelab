@@ -81,6 +81,19 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
+    - name: Wait for grafana-admin Secret to be created by Infisical
+      kubernetes.core.k8s_info:
+        kind: Secret
+        name: grafana-admin
+        namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: grafana_secret
+      until: grafana_secret.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: grafana_secret.resources | length == 0
+
     - name: Ensure prometheus-community Helm repo is present
       kubernetes.core.helm_repository:
         name: prometheus-community
