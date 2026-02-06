@@ -4,6 +4,8 @@
   gather_facts: false
   vars:
     deployment_namespace: infisical
+  environment:
+    KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
 
   tasks:
     - name: Add Infisical Helm repository
