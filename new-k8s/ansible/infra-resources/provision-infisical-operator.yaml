@@ -4,6 +4,8 @@
   gather_facts: false
   vars:
     deployment_namespace: infisical
+    infisical_api_token: "{{ lookup('env', 'INFISICAL_API_TOKEN') | default('', true) }}"
+    infisical_k8s_identity_endpoint: "{{ lookup('env', 'INFISICAL_K8S_IDENTITY_ENDPOINT') | default('', true) }}"
   environment:
     KUBECONFIG: "{{ lookup('env', 'HOME') }}/.kube/config"
 
@@ -124,3 +126,21 @@
           ===== CA Certificate for Infisical Kubernetes Auth =====
           {{ reviewer_token.resources[0].data['ca.crt'] | b64decode | replace('\\n', '\n') }}
           =========================================================
+
+    - name: Update Infisical machine identity with Kubernetes auth
+      ansible.builtin.uri:
+        url: "{{ infisical_k8s_identity_endpoint }}"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ infisical_api_token }}"
+          Content-Type: "application/json"
+        body_format: json
+        status_code:
+          - 200
+          - 204
+        body:
+          jwt: "{{ reviewer_token.resources[0].data.token | b64decode }}"
+          caCertificate: "{{ reviewer_token.resources[0].data['ca.crt'] | b64decode }}"
+      when:
+        - infisical_api_token | length > 0
+        - infisical_k8s_identity_endpoint | length > 0
