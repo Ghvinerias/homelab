@@ -299,15 +299,15 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
-    - name: Wait for Loki deployment to be ready
+    - name: Wait for Loki StatefulSet to be ready
       kubernetes.core.k8s_info:
-        kind: Deployment
+        kind: StatefulSet
         namespace: "{{ deployment_namespace }}"
         name: loki
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
-      register: loki_deployment
-      until: loki_deployment.resources[0].status.availableReplicas | default(0) >= 1
+      register: loki_statefulset
+      until: loki_statefulset.resources[0].status.readyReplicas | default(0) >= 1
       retries: 30
       delay: 10
 

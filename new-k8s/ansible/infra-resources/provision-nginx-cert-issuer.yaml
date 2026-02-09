@@ -42,6 +42,16 @@
               type: ClusterIP
             admissionWebhooks:
               enabled: false
+            metrics:
+              enabled: true
+              service:
+                annotations:
+                  prometheus.io/scrape: "true"
+                  prometheus.io/port: "10254"
+              serviceMonitor:
+                enabled: true
+                additionalLabels:
+                  release: kube-prometheus-stack
             tolerations:
               # Allow scheduling on control-plane nodes (new taint)
               - key: "node-role.kubernetes.io/control-plane"
@@ -51,18 +61,6 @@
               - key: "node-role.kubernetes.io/master"
                 operator: "Exists"
                 effect: "NoSchedule"
-          # Uncomment to enable monitoring of ingress-nginx, but prometheus needs to be provisioned first
-          # See k8s/gp/README.md for instructions
-          metrics:
-            enabled: true
-            service:
-              enabled: true
-            serviceMonitor:
-              enabled: true
-              namespace: monitoring
-              scrapeInterval: 30s
-              # No selector labels required since Prometheus in kube-prometheus-stack is set to scrape all ServiceMonitors
-              additionalLabels: {}
           
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"

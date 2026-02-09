@@ -248,6 +248,10 @@
               limits:
                 cpu: 500m
                 memory: 512Mi
+          kubeProxy:
+            enabled: false
+          kubeEtcd:
+            enabled: true
           kube-state-metrics:
             enabled: true
           nodeExporter:
