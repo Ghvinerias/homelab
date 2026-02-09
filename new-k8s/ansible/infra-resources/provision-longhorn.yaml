@@ -1,6 +1,6 @@
 ---
 - name: Prepare nodes for Longhorn storage
-  hosts: all
+  hosts: k8s_cluster
   become: true
   gather_facts: true
 
@@ -39,7 +39,7 @@
       ansible.builtin.file:
         path: /var/lib/longhorn
         state: directory
-        mode: '0755'
+        mode: "0755"
 
     - name: Check available disk space
       ansible.builtin.shell: df -h /var/lib/longhorn | tail -1 | awk '{print $4}'
@@ -55,7 +55,7 @@
   gather_facts: false
   connection: local
   become: false
-  
+
   vars:
     kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
     kube_context: ""
@@ -154,12 +154,11 @@
         release_namespace: "{{ deployment_namespace }}"
         create_namespace: true
         values:
-
           #If need be use below as 'values.yaml'
 
           # Longhorn configuration for Hetzner homelab
           # 3-node cluster: all nodes have control-plane + worker roles
-          
+
           # Allow Longhorn to run on control-plane nodes
           longhornManager:
             tolerations:
@@ -197,11 +196,11 @@
               limits:
                 cpu: 200m
                 memory: 256Mi
-          
+
           defaultBackupStoreSettings:
             # Storage settings
-            defaultReplicaCount: 1  # 1 replica across 3 nodes
-            guaranteedEngineManagerCPU: 5  # CPU reservation percentage
+            defaultReplicaCount: 1 # 1 replica across 3 nodes
+            guaranteedEngineManagerCPU: 5 # CPU reservation percentage
             guaranteedReplicaManagerCPU: 5
             # Backup settings
             backupTarget: "{{ longhorn_s3_backup_target }}"
@@ -215,13 +214,13 @@
             # Auto-salvage and recovery
             autoSalvage: true
             autoDeletePodWhenVolumeDetachedUnexpectedly: true
-          
+
           persistence:
             defaultClass: true
             defaultClassReplicaCount: 1
             reclaimPolicy: Delete
             migratable: true
-          
+
           ingress:
             enabled: true
             ingressClassName: nginx
@@ -233,7 +232,7 @@
               nginx.ingress.kubernetes.io/auth-type: basic
               nginx.ingress.kubernetes.io/auth-secret: longhorn-auth-id
               nginx.ingress.kubernetes.io/auth-realm: "Longhorn - Authentication Required"
-            #till here    
+            #till here
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
         wait: true
@@ -264,7 +263,7 @@
         patch:
           - op: replace
             path: "/spec/disks/{{ (item.spec.disks | dict2items | first).key }}/storageReserved"
-            value: 4000000000  # ~4GiB reservation per disk
+            value: 4000000000 # ~4GiB reservation per disk
       loop: "{{ longhorn_nodes.resources }}"
       loop_control:
         label: "{{ item.metadata.name }}"
@@ -287,7 +286,7 @@
 
     - name: Display Longhorn UI access information
       ansible.builtin.debug:
-        msg: 
+        msg:
           - "Longhorn deployment complete!"
           - "UI available at: {{ longhorn_url }}"
           - "Check status: kubectl -n longhorn-system get pods"
