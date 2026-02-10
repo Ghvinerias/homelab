@@ -155,7 +155,7 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
 
-    - name: Deploy Proxmox MCP API Service 8811
+    - name: Deploy Proxmox MCP API Service
       kubernetes.core.k8s:
         state: present
         definition:
@@ -166,36 +166,15 @@
             namespace: "{{ deployment_namespace }}"
             labels:
               app: proxmox-mcp-api
+            annotations:
+              kube-vip.io/vipInterface: eth1
           spec:
-            type: ClusterIP
+            type: LoadBalancer
             ports:
               - port: 8811
                 targetPort: 8811
                 protocol: TCP
-                name: http
-            selector:
-              app: proxmox-mcp-api
-        kubeconfig: "{{ kubeconfig }}"
-        context: "{{ kube_context if kube_context else omit }}"
-
-    - name: Deploy Proxmox MCP API Service 8810
-      kubernetes.core.k8s:
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Service
-          metadata:
-            name: proxmox-mcp-api
-            namespace: "{{ deployment_namespace }}"
-            labels:
-              app: proxmox-mcp-api
-          spec:
-            type: ClusterIP
-            ports:
-              - port: 8810
-                targetPort: 8810
-                protocol: TCP
-                name: http
+                name: mcp
             selector:
               app: proxmox-mcp-api
         kubeconfig: "{{ kubeconfig }}"

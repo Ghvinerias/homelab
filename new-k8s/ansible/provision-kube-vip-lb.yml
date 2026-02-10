@@ -1,0 +1,156 @@
+---
+- name: Configure network interface on K8s nodes
+  hosts: control_plane
+  become: true
+  vars:
+    lb_interface: "ens19"
+    lb_vlan_id: 0  # Optional: set to 0 if not using VLAN tagging
+  
+  tasks:
+    - name: Ensure interface is up (no IP assigned)
+      ansible.builtin.shell: |
+        ip link set {{ lb_interface }} up
+      changed_when: false
+
+    - name: Create netplan config for LoadBalancer interface
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-kube-vip-lb.yaml
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ lb_interface }}:
+                dhcp4: no
+                dhcp6: no
+        mode: '0644'
+      register: netplan_config
+
+    - name: Apply netplan configuration
+      ansible.builtin.command: netplan apply
+      when: netplan_config.changed
+
+- name: Deploy kube-vip cloud controller for LoadBalancer services
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: ""
+    # LoadBalancer IP pool configuration (adjust for your VLAN)
+    lb_ip_range: "10.17.88.10-10.17.88.250"  # Or use cidr-global: "10.17.100.0/24"
+    lb_interface: "ens19"  # Separate interface/VLAN for LoadBalancer IPs
+    
+  tasks:
+    - name: Create kube-vip ConfigMap for LoadBalancer IP pool
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: kubevip
+            namespace: kube-system
+          data:
+            range-global: "{{ lb_ip_range }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create RBAC for kube-vip cloud controller
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: kube-vip-cloud-controller
+            namespace: kube-system
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create ClusterRole for kube-vip cloud controller
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRole
+          metadata:
+            name: kube-vip-cloud-controller
+          rules:
+            - apiGroups: [""]
+              resources: ["services", "services/status", "nodes", "endpoints"]
+              verbs: ["list", "get", "watch", "update"]
+            - apiGroups: [""]
+              resources: ["configmaps"]
+              verbs: ["list", "get", "watch"]
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["list", "get", "watch", "update", "create"]
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create ClusterRoleBinding
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: kube-vip-cloud-controller
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: kube-vip-cloud-controller
+          subjects:
+            - kind: ServiceAccount
+              name: kube-vip-cloud-controller
+              namespace: kube-system
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy kube-vip cloud controller Deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: kube-vip-cloud-controller
+            namespace: kube-system
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: kube-vip-cloud-controller
+            template:
+              metadata:
+                labels:
+                  app: kube-vip-cloud-controller
+              spec:
+                serviceAccountName: kube-vip-cloud-controller
+                hostNetwork: true
+                tolerations:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+                    effect: NoSchedule
+                containers:
+                  - name: kube-vip-cloud-provider
+                    image: ghcr.io/kube-vip/kube-vip-cloud-provider:v0.0.10
+                    imagePullPolicy: IfNotPresent
+                    env:
+                      - name: KUBEVIP_NAMESPACE
+                        value: kube-system
+                      - name: KUBEVIP_CONFIG_MAP
+                        value: kubevip
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Delete old DaemonSet if exists
+      kubernetes.core.k8s:
+        state: absent
+        api_version: apps/v1
+        kind: DaemonSet
+        name: kube-vip-cloud-controller
+        namespace: kube-system
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
