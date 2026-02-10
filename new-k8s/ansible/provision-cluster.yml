@@ -192,7 +192,6 @@
           --interface $INTERFACE \
           --address $VIP \
           --controlplane \
-          --services \
           --arp \
           --leaderElection | tee /etc/kubernetes/manifests/kube-vip.yaml
       run_once: true
