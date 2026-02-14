@@ -36,14 +36,6 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 4.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = ">= 2.32.0"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = ">= 2.12.1"
-    }
   }
 }
 
@@ -88,8 +80,8 @@ variable "node_configs" {
 
 
 resource "hcloud_ssh_key" "main" {
-  name       = "epam_ssh_key"
-  public_key = data.bitwarden-secrets_secret.epam_ssh_key.value
+  name       = "mac_pro_ssh_key"
+  public_key = data.bitwarden-secrets_secret.mac_pro_ssh_key.value
 }
 resource "hcloud_ssh_key" "main-extra" {
   name       = "mac_air_ssh_key"
