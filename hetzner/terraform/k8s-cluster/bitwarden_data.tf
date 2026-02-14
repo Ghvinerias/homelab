@@ -11,7 +11,7 @@ provider "bitwarden-secrets" {
 data "bitwarden-secrets_secret" "HETZER_API_TOKEN" {
   id = "5cc33b68-00c5-41c1-9249-b36b00b04efd"
 }
-data "bitwarden-secrets_secret" "epam_ssh_key" {
+data "bitwarden-secrets_secret" "mac_pro_ssh_key" {
   id = "25e9088e-bee2-4611-9f55-b36e0081c719"
 }
 data "bitwarden-secrets_secret" "mac_air_ssh_key" {
