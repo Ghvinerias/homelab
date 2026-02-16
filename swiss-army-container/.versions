@@ -1,3 +1,3 @@
 bws=bws-v2.0.0
-kubectl=v1.35.0
-wireguard=1.0.20250521-r1-ls101
+kubectl=v1.35.1
+wireguard=1.0.20250521-r1-ls102
