@@ -1,0 +1,81 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx-external
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: example-external
+  namespace: ingress-nginx-external
+spec:
+  sessionAffinity: ClientIP
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8006
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: example-external
+  namespace: ingress-nginx-external
+subsets:
+  - addresses:
+      - ip: 10.10.10.48
+      - ip: 10.10.10.49
+      - ip: 10.10.10.50
+      - ip: 10.10.10.51
+      - ip: 10.10.10.52
+      - ip: 10.10.10.53
+    ports:
+      - name: https
+        port: 8006
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: example
+  namespace: ingress-nginx-external
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-ssl-verify: "off"
+    nginx.ingress.kubernetes.io/proxy-body-size: "20m"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "on"
+    nginx.ingress.kubernetes.io/proxy-max-temp-file-size: "1024m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "on"
+    nginx.ingress.kubernetes.io/proxy-hide-headers: "X-Powered-By"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/upstream-hash-by: "$remote_addr"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      charset utf-8;
+      sendfile on;
+      client_header_buffer_size 1k;
+      large_client_header_buffers 4 8k;
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-TLS-Cipher $ssl_cipher;
+      proxy_set_header X-TLS-Protocol $ssl_protocol;
+      proxy_set_header X-TLS-SNI-Host $ssl_server_name;
+      proxy_set_header X-Forwarded-Protocol $scheme;
+      proxy_ignore_client_abort off;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx-external
+  tls:
+    - hosts:
+        - example.infra.slick.ge
+      secretName: example-tls
+  rules:
+    - host: example.infra.slick.ge
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: example-external
+                port:
+                  number: 443
