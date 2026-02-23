@@ -1,0 +1,194 @@
+---
+# Provision MetalLB for bare-metal LoadBalancer services
+#
+# Prerequisites:
+#   - Secondary interface (ens19) must be up on all nodes with no IP assigned
+#     (handled by provision-kube-vip-lb.yml or netplan config)
+#   - The 10.17.88.0/24 network must be reachable via ens19 (no DHCP)
+#
+# Usage:
+#   ansible-playbook infra-resources/provision-metallb.yaml
+#
+# To remove kube-vip cloud controller first (if migrating):
+#   kubectl delete deployment kube-vip-cloud-controller -n kube-system
+#   kubectl delete configmap kubevip -n kube-system
+
+- name: Configure ens19 interface with static IPs on all K8s nodes
+  hosts: control_plane
+  become: true
+  vars:
+    lb_interface: "ens19"
+    lb_gateway: "10.17.88.1"
+    # Static IPs for each node (outside MetalLB pool)
+    node_ips:
+      k8s-node-01: "10.17.88.2"
+      k8s-node-02: "10.17.88.3"
+      k8s-node-03: "10.17.88.4"
+  tasks:
+    - name: Configure netplan for {{ lb_interface }} with static IP
+      ansible.builtin.copy:
+        dest: /etc/netplan/99-metallb-lb.yaml
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ lb_interface }}:
+                dhcp4: no
+                dhcp6: no
+                addresses:
+                  - {{ node_ips[inventory_hostname] }}/24
+                routes:
+                  - to: default
+                    via: {{ lb_gateway }}
+                    metric: 200
+        mode: '0644'
+      register: netplan_config
+
+    - name: Apply netplan configuration
+      ansible.builtin.command: netplan apply
+      when: netplan_config.changed
+
+- name: Deploy MetalLB via Helm and configure IP pool
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: ""
+    metallb_namespace: "metallb-system"
+    # LoadBalancer IP pool — adjust range to match your dedicated L2 network
+    lb_ip_range_start: "10.17.88.10"
+    lb_ip_range_end: "10.17.88.250"
+    # Interface on each node connected to the LoadBalancer network
+    lb_interface: "ens19"
+
+  tasks:
+    # ── Install MetalLB ───────────────────────────────────────────────
+    - name: Add MetalLB Helm repository
+      kubernetes.core.helm_repository:
+        name: metallb
+        repo_url: https://metallb.github.io/metallb
+
+    - name: Deploy MetalLB via Helm
+      kubernetes.core.helm:
+        name: metallb
+        chart_ref: metallb/metallb
+        release_namespace: "{{ metallb_namespace }}"
+        create_namespace: true
+        values:
+          speaker:
+            # Tolerate control-plane taints so speaker runs on all nodes
+            tolerations:
+              - key: "node-role.kubernetes.io/control-plane"
+                operator: "Exists"
+                effect: "NoSchedule"
+              - key: "node-role.kubernetes.io/master"
+                operator: "Exists"
+                effect: "NoSchedule"
+          controller:
+            tolerations:
+              - key: "node-role.kubernetes.io/control-plane"
+                operator: "Exists"
+                effect: "NoSchedule"
+              - key: "node-role.kubernetes.io/master"
+                operator: "Exists"
+                effect: "NoSchedule"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        atomic: true
+        update_repo_cache: true
+        timeout: "5m0s"
+
+    # ── Wait for CRDs to be established ───────────────────────────────
+    - name: Wait for MetalLB CRDs to be available
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: crd_check
+      until: crd_check.resources | length > 0
+      retries: 30
+      delay: 5
+      loop:
+        - ipaddresspools.metallb.io
+        - l2advertisements.metallb.io
+
+    # ── Configure IP Address Pool ─────────────────────────────────────
+    - name: Create MetalLB IPAddressPool
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: homelab-pool
+            namespace: "{{ metallb_namespace }}"
+          spec:
+            addresses:
+              - "{{ lb_ip_range_start }}-{{ lb_ip_range_end }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    # ── Configure L2 Advertisement ────────────────────────────────────
+    - name: Create MetalLB L2Advertisement
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: homelab-l2-advert
+            namespace: "{{ metallb_namespace }}"
+          spec:
+            ipAddressPools:
+              - homelab-pool
+            interfaces:
+              - "{{ lb_interface }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    # ── Verification ──────────────────────────────────────────────────
+    - name: Verify MetalLB controller is running
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: Deployment
+        name: metallb-controller
+        namespace: "{{ metallb_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: controller_status
+      until: >-
+        controller_status.resources | length > 0 and
+        (controller_status.resources[0].status.readyReplicas | default(0)) >= 1
+      retries: 12
+      delay: 10
+
+    - name: Verify MetalLB speaker DaemonSet is ready
+      kubernetes.core.k8s_info:
+        api_version: apps/v1
+        kind: DaemonSet
+        name: metallb-speaker
+        namespace: "{{ metallb_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: speaker_status
+      until: >-
+        speaker_status.resources | length > 0 and
+        (speaker_status.resources[0].status.numberReady | default(0)) ==
+        (speaker_status.resources[0].status.desiredNumberScheduled | default(1))
+      retries: 12
+      delay: 10
+
+    - name: MetalLB deployment summary
+      ansible.builtin.debug:
+        msg: |
+          MetalLB deployed successfully!
+            Namespace:  {{ metallb_namespace }}
+            IP Pool:    {{ lb_ip_range_start }} - {{ lb_ip_range_end }}
+            Interface:  {{ lb_interface }} (L2 mode)
+            Controller: {{ controller_status.resources[0].status.readyReplicas | default(0) }} ready
+            Speakers:   {{ speaker_status.resources[0].status.numberReady | default(0) }}/{{ speaker_status.resources[0].status.desiredNumberScheduled | default(0) }} ready
