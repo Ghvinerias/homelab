@@ -375,7 +375,6 @@
           --interface $INTERFACE \
           --address $VIP \
           --controlplane \
-          --services \
           --arp \
           --leaderElection | tee /etc/kubernetes/manifests/kube-vip.yaml
       when: inventory_hostname != groups['control_plane'][0]
