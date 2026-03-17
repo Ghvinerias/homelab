@@ -1,0 +1,59 @@
+---
+- name: Deploy Echo Server with Nginx Ingress
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: ""
+    namespace: "echoserver"
+
+  tasks:
+    - name: Ensure ingress-nginx Helm repo exists
+      kubernetes.core.helm_repository:
+        name: ingress-nginx
+        repo_url: https://kubernetes.github.io/ingress-nginx
+
+    - name: Deploy echo application
+      kubernetes.core.k8s:
+        state: present
+        src: echo.kube.yaml
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy nginx ingress controller in echoserver namespace
+      kubernetes.core.helm:
+        name: ingress-nginx-echo
+        chart_ref: ingress-nginx/ingress-nginx
+        release_namespace: "{{ namespace }}"
+        create_namespace: true
+        atomic: true
+        wait: true
+        update_repo_cache: true
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        values:
+          controller:
+            ingressClassResource:
+              name: nginx-echo
+              enabled: true
+              default: false
+              controllerValue: "k8s.io/ingress-nginx-echo"
+            resources:
+              limits:
+                cpu: "800m"
+                memory: "2096Mi"
+              requests:
+                cpu: "800m"
+                memory: "2096Mi"
+            ingressClass: nginx-echo
+            metrics:
+              enabled: true
+              serviceMonitor:
+                enabled: true
+                additionalLabels:
+                  release: kube-prometheus-stack
+            service:
+              type: LoadBalancer
