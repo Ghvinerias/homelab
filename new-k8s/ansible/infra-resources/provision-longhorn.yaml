@@ -217,7 +217,7 @@
 
           persistence:
             defaultClass: true
-            defaultClassReplicaCount: 1
+            defaultClassReplicaCount: 2
             reclaimPolicy: Delete
             migratable: true
 
