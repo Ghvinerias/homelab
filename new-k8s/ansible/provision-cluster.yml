@@ -10,7 +10,7 @@
     CNI_PLUGINS_VERSION: "1.5.1"
     POD_NETWORK_CIDR: "10.244.0.0/16"
     MASTER_PRIVATE_IP: "{{ master_private_ip | default('10.11.99.61') }}"
-    EXTRA_API_SERVER_SANS: "{{ '127.0.0.1,10.11.99.50,k8s-mgmt.infra.slick.ge' }}"
+    EXTRA_API_SERVER_SANS: "{{ '127.0.0.1,10.11.99.50,k8s-mgmt.slick.ge' }}"
     CONTROL_PLANE_ENDPOINT: "10.11.99.50:6443"
     lb_interface: "ens19"
     lb_interface_prefix: "24"
