@@ -44,7 +44,7 @@
             enableAnnotationValidations: true
             service:
               type: LoadBalancer
-              externalTrafficPolicy: Local
+              externalTrafficPolicy: Cluster
             ingressClass: "nginx-external"
             ingressClassResource:
               name: "nginx-external"
