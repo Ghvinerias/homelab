@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ingress-nginx-external
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: not-implemented-page
+  namespace: ingress-nginx-external
+data:
+  index.html: |
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Not Implemented</title>
+      </head>
+      <body>
+        <h1>Not Implemented</h1>
+        <p>The requested hostname is not configured.</p>
+      </body>
+    </html>
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: not-implemented-web
+  namespace: ingress-nginx-external
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: not-implemented-web
+  template:
+    metadata:
+      labels:
+        app: not-implemented-web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          volumeMounts:
+            - name: page
+              mountPath: /usr/share/nginx/html/index.html
+              subPath: index.html
+      volumes:
+        - name: page
+          configMap:
+            name: not-implemented-page
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: not-implemented-web
+  namespace: ingress-nginx-external
+spec:
+  selector:
+    app: not-implemented-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: catchall-not-implemented
+  namespace: ingress-nginx-external
+  annotations:
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/server-snippet: |
+      if ($http_user_agent ~* "Python-urllib|Nmap|python-requests|libwww-perl|MJ12bot|Jorgee|fasthttp|libwww|Telesphoreo|A6-Indexer|ltx71|okhttp|ZmEu|sqlmap|LMAO/2.0|l9explore|l9tcpid|Masscan|zgrab|Ronin/2.0|Hakai/2.0|Indy\\sLibrary|^Mozilla/[\\d\\.]+$|Morfeus\\sFucking\\sScanner|MSIE\\s[0-6]\\.\\d+") {
+        return 418;
+      }
+spec:
+  ingressClassName: nginx-external
+  tls:
+    - secretName: infra-slick-ge-tls
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: not-implemented-web
+                port:
+                  number: 80
