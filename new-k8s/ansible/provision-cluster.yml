@@ -12,6 +12,12 @@
     MASTER_PRIVATE_IP: "{{ master_private_ip | default('10.11.99.61') }}"
     EXTRA_API_SERVER_SANS: "{{ '127.0.0.1,10.11.99.50,k8s-mgmt.infra.slick.ge' }}"
     CONTROL_PLANE_ENDPOINT: "10.11.99.50:6443"
+    lb_interface: "ens19"
+    lb_interface_prefix: "24"
+    lb_interface_ips:
+      k8s-node-01: "10.17.88.11"
+      k8s-node-02: "10.17.88.12"
+      k8s-node-03: "10.17.88.13"
 
   environment:
     DEBIAN_FRONTEND: noninteractive
@@ -22,6 +28,34 @@
         delay: 5
         sleep: 10
         timeout: 600
+
+    - name: Validate static LB interface IP is defined for node
+      ansible.builtin.assert:
+        that:
+          - lb_interface_ips[inventory_hostname] is defined
+        fail_msg: "Missing lb_interface_ips mapping for {{ inventory_hostname }}"
+
+    - name: Ensure LB interface exists
+      ansible.builtin.command: ip -o link show "{{ lb_interface }}"
+      changed_when: false
+
+    - name: Configure static IP on LB interface via netplan
+      ansible.builtin.copy:
+        dest: /etc/netplan/60-k8s-lb-interface.yaml
+        mode: "0644"
+        content: |
+          network:
+            version: 2
+            ethernets:
+              {{ lb_interface }}:
+                dhcp4: false
+                addresses:
+                  - {{ lb_interface_ips[inventory_hostname] }}/{{ lb_interface_prefix }}
+      register: lb_netplan
+
+    - name: Apply netplan for LB interface
+      ansible.builtin.command: netplan apply
+      when: lb_netplan.changed
 
     - name: Kernel modules file
       ansible.builtin.copy:
@@ -77,6 +111,8 @@
       ansible.builtin.file:
         path: /opt/cni/bin
         state: directory
+        owner: root
+        group: root
         mode: "0755"
 
     - name: Download CNI plugins
@@ -90,6 +126,15 @@
         src: /tmp/cni.tgz
         dest: /opt/cni/bin
         remote_src: true
+
+    - name: Normalize CNI path ownership for Cilium init containers
+      ansible.builtin.file:
+        path: /opt/cni/bin
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+        recurse: true
 
     - name: Ensure containerd dir
       ansible.builtin.file:
@@ -215,6 +260,7 @@
         --control-plane-endpoint={{ CONTROL_PLANE_ENDPOINT }}
         --ignore-preflight-errors=NumCPU
         --upload-certs
+        --skip-phases=addon/kube-proxy
       args:
         creates: /etc/kubernetes/admin.conf
       register: kubeadm_init
@@ -264,34 +310,6 @@
       run_once: true
       delegate_to: "{{ groups['control_plane'][0] }}"
 
-    - name: Deploy Flannel
-      ansible.builtin.command: >
-        kubectl --kubeconfig=/etc/kubernetes/super-admin.conf apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml --validate=false
-      register: flannel_deploy
-      failed_when: flannel_deploy.rc != 0
-      run_once: true
-      delegate_to: "{{ groups['control_plane'][0] }}"
-
-    - name: Wait for Flannel pods to be ready
-      ansible.builtin.command: kubectl --kubeconfig=/etc/kubernetes/super-admin.conf get pods -n kube-flannel -o jsonpath='{.items[*].status.phase}'
-      register: flannel_status
-      until: "'Pending' not in flannel_status.stdout and 'ContainerCreating' not in flannel_status.stdout"
-      retries: 60
-      delay: 10
-      run_once: true
-      delegate_to: "{{ groups['control_plane'][0] }}"
-    
-    - name: Save and show join command
-      ansible.builtin.shell: "KUBECONFIG=/etc/kubernetes/super-admin.conf kubeadm token create --print-join-command | tee /root/join.sh"
-      register: join_cmd
-      run_once: true
-      delegate_to: "{{ groups['control_plane'][0] }}"
-
-    - name: Join command (debug)
-      ansible.builtin.debug:
-        var: join_cmd.stdout
-      run_once: true
-      delegate_to: "{{ groups['control_plane'][0] }}"
 
     - name: Read kubeconfig from control plane
       ansible.builtin.slurp:
@@ -308,6 +326,101 @@
         content: "{{ kubeconfig_b64.content | b64decode }}"
       run_once: true
       delegate_to: localhost
+
+    - name: Add Cilium Helm repo
+      ansible.builtin.command: helm repo add cilium https://helm.cilium.io/
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Update Helm repos
+      ansible.builtin.command: helm repo update
+      delegate_to: localhost
+      run_once: true
+      changed_when: false
+
+    - name: Set Cilium devices interface
+      ansible.builtin.set_fact:
+        cilium_devices_interface: "{{ lb_interface }}"
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      delegate_facts: true
+
+    - name: Deploy Cilium via Helm
+      vars:
+        _lb_interface: "{{ hostvars[groups['control_plane'][0]].cilium_devices_interface }}"
+        _api_host: "{{ CONTROL_PLANE_ENDPOINT.split(':')[0] }}"
+        _api_port: "{{ CONTROL_PLANE_ENDPOINT.split(':')[1] }}"
+      ansible.builtin.command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - cilium
+          - cilium/cilium
+          - --version
+          - "1.16.5"
+          - --namespace
+          - kube-system
+          - --set
+          - kubeProxyReplacement=true
+          - --set
+          - "k8sServiceHost={{ _api_host }}"
+          - --set
+          - "k8sServicePort={{ _api_port }}"
+          - --set
+          - ipam.mode=cluster-pool
+          - --set
+          - "ipam.operator.clusterPoolIPv4PodCIDRList={10.244.0.0/16}"
+          - --set
+          - routingMode=tunnel
+          - --set
+          - tunnelProtocol=vxlan
+          - --set
+          - l2announcements.enabled=true
+          - --set
+          - externalIPs.enabled=true
+          - --set
+          - "devices={{ _lb_interface }}"
+          - --set
+          - hubble.enabled=true
+          - --set
+          - hubble.relay.enabled=true
+          - --set
+          - hubble.ui.enabled=true
+          - --set
+          - operator.replicas=1
+          - --kubeconfig
+          - ./kube_config
+      register: cilium_install
+      failed_when: cilium_install.rc != 0
+      run_once: true
+      delegate_to: localhost
+
+    - name: Wait for Cilium DaemonSet to be ready
+      ansible.builtin.command: >
+        kubectl --kubeconfig=./kube_config
+        -n kube-system rollout status daemonset/cilium --timeout=300s
+      register: cilium_status
+      retries: 5
+      delay: 15
+      until: cilium_status.rc == 0
+      run_once: true
+      delegate_to: localhost
+
+    
+    - name: Save and show join command
+      ansible.builtin.shell: "KUBECONFIG=/etc/kubernetes/super-admin.conf kubeadm token create --print-join-command | tee /root/join.sh"
+      register: join_cmd
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: Join command (debug)
+      ansible.builtin.debug:
+        var: join_cmd.stdout
+      run_once: true
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
 
     - name: Ensure local kube dir exists (~/.kube)
       become: false
@@ -438,3 +551,75 @@
       register: label_remove
       failed_when: label_remove.rc != 0 and 'not found' not in label_remove.stderr and 'label not found' not in label_remove.stderr
       delegate_to: "{{ groups['control_plane'][0] }}"
+
+# Configure Cilium LoadBalancer IP pool and L2 announcement policy
+- name: Configure Cilium LoadBalancer IP pool and L2 policy
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('./kube_config', true) }}"
+    kube_context: ""
+    lb_ip_range_start: "10.17.88.30"
+    lb_ip_range_end:   "10.17.88.250"
+    lb_interface: "{{ hostvars[groups['control_plane'][0]].cilium_devices_interface | default('ens19') }}"
+
+  tasks:
+    - name: Wait for Cilium CRDs to be available
+      kubernetes.core.k8s_info:
+        api_version: apiextensions.k8s.io/v1
+        kind: CustomResourceDefinition
+        name: "{{ item }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: crd_check
+      until: crd_check.resources | length > 0
+      retries: 30
+      delay: 5
+      loop:
+        - ciliumloadbalancerippools.cilium.io
+        - ciliuml2announcementpolicies.cilium.io
+
+    - name: Create Cilium LoadBalancer IP pool
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        definition:
+          apiVersion: cilium.io/v2alpha1
+          kind: CiliumLoadBalancerIPPool
+          metadata:
+            name: homelab-pool
+          spec:
+            blocks:
+              - start: "{{ lb_ip_range_start }}"
+                stop:  "{{ lb_ip_range_end }}"
+
+    - name: Create Cilium L2 announcement policy
+      kubernetes.core.k8s:
+        state: present
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        definition:
+          apiVersion: cilium.io/v2alpha1
+          kind: CiliumL2AnnouncementPolicy
+          metadata:
+            name: homelab-l2
+          spec:
+            interfaces:
+              - "{{ lb_interface }}"
+            externalIPs: true
+            loadBalancerIPs: true
+
+    - name: Provisioning summary
+      ansible.builtin.debug:
+        msg: |
+          Cluster provisioning complete
+          ─────────────────────────────────────────────
+          API VIP:    10.11.99.50 (kube-vip static pod on eth0)
+          CNI:        Cilium (kube-proxy replacement enabled)
+          LB pool:    {{ lb_ip_range_start }} – {{ lb_ip_range_end }} on {{ lb_interface }}
+          Hubble UI:  kubectl port-forward -n kube-system svc/hubble-ui 12000:80
+          ─────────────────────────────────────────────
