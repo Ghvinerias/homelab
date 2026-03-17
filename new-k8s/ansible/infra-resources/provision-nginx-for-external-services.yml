@@ -41,6 +41,7 @@
           controller:
             replicaCount: 2
             allowSnippetAnnotations: true
+            enableAnnotationValidations: true
             service:
               type: LoadBalancer
               externalTrafficPolicy: Local
@@ -49,6 +50,7 @@
               name: "nginx-external"
               enabled: true
               default: false
+              controllerValue: "k8s.io/ingress-nginx-external"
             metrics:
               enabled: true
               serviceMonitor:
@@ -83,10 +85,12 @@
             config:
               allow-snippet-annotations: "true"
               annotations-risk-level: "Critical"
+              log-format-upstream: '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $request_length $request_time [$proxy_upstream_name] [$proxy_alternative_upstream_name] $upstream_addr $upstream_response_length $upstream_response_time $upstream_status $req_id'
+              access-log-path: /dev/stdout
+              error-log-path: /dev/stderr
               ssl-protocols: "TLSv1.2 TLSv1.3"
               ssl-ciphers: "ECDHE-ECDSA-CAMELLIA256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CAMELLIA256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-CAMELLIA128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-CAMELLIA128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-ECDSA-CAMELLIA256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-RSA-CAMELLIA256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-ECDSA-CAMELLIA128-SHA256:ECDHE-RSA-AES128-SHA256"
               ssl-session-timeout: "1d"
-              ssl-session-cache: "shared:SSL:50m"
               ssl-session-tickets: "false"
               ssl-prefer-server-ciphers: "off"
               ssl-stapling: "false"
@@ -99,7 +103,7 @@
               # OpenTelemetry
               #################################################################
               enable-opentelemetry: "true"
-              opentelemetry-collector-host: "otel-collector.monitoring.svc.cluster.local"
+              opentelemetry-collector-host: "opentelemetry-collector.monitoring.svc.cluster.local"
               opentelemetry-collector-port: "4317"
               opentelemetry-operation-name: "HTTP $request_method $uri"
               opentelemetry-trust-incoming-span: "true"
