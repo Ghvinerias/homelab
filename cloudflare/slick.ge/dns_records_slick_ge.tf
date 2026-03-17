@@ -1,3 +1,11 @@
+resource "cloudflare_record" "slick_ge_pbs-waw_cloud_slick_ge" {
+  zone_id = cloudflare_zone.slick_ge.id
+  name    = "pbs.waw.slick.ge"
+  type    = "A"
+  content   = "151.115.73.179"
+  ttl     = 1
+  proxied = false
+} 
 # record_id: ddf2824cf6d85d64e72b7b94e7c9cb85
 resource "cloudflare_record" "slick_ge_cloud_slick_ge_ddf2824cf6d85d64e72b7b94e7c9cb85" {
   zone_id = cloudflare_zone.slick_ge.id
