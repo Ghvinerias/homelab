@@ -19,6 +19,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Fail fast with a clear message if either secret is not configured.
+      # GitHub passes empty string for unset secrets — this catches that.
+      - name: Preflight — verify secrets are set
+        env:
+          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          GH_PROVISIONER_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
+        run: |
+          missing=()
+          [[ -z "$BWS_ACCESS_TOKEN" ]]   && missing+=("BWS_ACCESS_TOKEN")
+          [[ -z "$GH_PROVISIONER_PAT" ]] && missing+=("GH_PROVISIONER_PAT")
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::The following secrets are not set on this repository: ${missing[*]}"
+            echo "Go to Settings → Secrets and variables → Actions and add them."
+            exit 1
+          fi
+          echo "Preflight passed — both secrets are present."
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
