@@ -1,0 +1,48 @@
+name: Provision Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Repository to provision (owner/repo)"
+        required: true
+        type: string
+
+jobs:
+  provision:
+    name: "Provision ${{ inputs.target_repo }}"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r custom-tooling/bws_secret_injector/requirements.txt
+
+      # Copy BWS_ACCESS_TOKEN from this repo's secrets into the target repo
+      # under the same name, encrypted with the target repo's NaCl public key.
+      - name: Copy BWS_ACCESS_TOKEN to target repo
+        env:
+          GH_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          SECRET_NAME: "BWS_ACCESS_TOKEN"
+          SECRET_VALUE: ${{ secrets.BWS_ACCESS_TOKEN }}
+        run: python custom-tooling/bws_secret_injector/inject_secret.py
+
+      - name: Summary
+        if: success()
+        run: |
+          echo "### Provisioning complete :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Target repo | \`${{ inputs.target_repo }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret copied | \`BWS_ACCESS_TOKEN\` |" >> $GITHUB_STEP_SUMMARY
