@@ -23,11 +23,11 @@ jobs:
       # GitHub passes empty string for unset secrets — this catches that.
       - name: Preflight — verify secrets are set
         env:
-          BWS_ACCESS_TOKEN: ${{ secrets.BWS_ACCESS_TOKEN }}
+          BW_ACCESS_TOKEN: ${{ secrets.BW_ACCESS_TOKEN }}
           GH_PROVISIONER_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
         run: |
           missing=()
-          [[ -z "$BWS_ACCESS_TOKEN" ]]   && missing+=("BWS_ACCESS_TOKEN")
+          [[ -z "$BW_ACCESS_TOKEN" ]]   && missing+=("BW_ACCESS_TOKEN")
           [[ -z "$GH_PROVISIONER_PAT" ]] && missing+=("GH_PROVISIONER_PAT")
           if [[ ${#missing[@]} -gt 0 ]]; then
             echo "::error::The following secrets are not set on this repository: ${missing[*]}"
@@ -44,14 +44,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r custom-tooling/bws_secret_injector/requirements.txt
 
-      # Copy BWS_ACCESS_TOKEN from this repo's secrets into the target repo
+      # Copy BW_ACCESS_TOKEN from this repo's secrets into the target repo
       # under the same name, encrypted with the target repo's NaCl public key.
-      - name: Copy BWS_ACCESS_TOKEN to target repo
+      - name: Copy BW_ACCESS_TOKEN to target repo
         env:
           GH_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
           TARGET_REPO: ${{ inputs.target_repo }}
-          SECRET_NAME: "BWS_ACCESS_TOKEN"
-          SECRET_VALUE: ${{ secrets.BWS_ACCESS_TOKEN }}
+          SECRET_NAME: "BW_ACCESS_TOKEN"
+          SECRET_VALUE: ${{ secrets.BW_ACCESS_TOKEN }}
         run: python custom-tooling/bws_secret_injector/inject_secret.py
 
       - name: Summary
@@ -62,4 +62,4 @@ jobs:
           echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|---|---|" >> $GITHUB_STEP_SUMMARY
           echo "| Target repo | \`${{ inputs.target_repo }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Secret copied | \`BWS_ACCESS_TOKEN\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Secret copied | \`BW_ACCESS_TOKEN\` |" >> $GITHUB_STEP_SUMMARY
