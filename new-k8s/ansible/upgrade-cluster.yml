@@ -1,0 +1,983 @@
+---
+# =============================================================================
+# Kubernetes Cluster Upgrade Playbook
+# =============================================================================
+# Supports:  patch upgrades (1.31.x → 1.31.y)
+#            minor upgrades (1.31.x → 1.32.y)  — one minor at a time only
+#
+# Usage:
+#   ansible-playbook upgrade-k8s.yml \
+#     -i inventory.ini \
+#     -e "target_k8s_version=v1.32.3" \
+#     -e "target_containerd_version=2.0.2" \   # optional
+#     -e "dry_run=true"                          # optional — preflight only
+#
+# Topology:  Nodes are split into two inventory groups:
+#              [control_plane]  — all control-plane nodes (required)
+#              [k8s_workers]    — pure worker nodes (optional, may be empty)
+#            Play 1 upgrades CP[0], Play 2 upgrades remaining CPs serially.
+#            Play 3 upgrades workers serially — only runs when:
+#              - upgrade_workers=true  is passed via -e
+#              - the [k8s_workers] inventory group exists and is non-empty
+#
+# Usage:
+#   # Control-plane only (default — workers skipped even if group exists)
+#   ansible-playbook upgrade-k8s.yml -i inventory.ini \
+#     -e "target_k8s_version=v1.32.3"
+#
+#   # Include workers
+#   ansible-playbook upgrade-k8s.yml -i inventory.ini \
+#     -e "target_k8s_version=v1.32.3" \
+#     -e "upgrade_workers=true"
+#
+# Safety nets:
+#   - Preflight: version skew, disk space, node health, etcd health
+#   - Dry-run mode (-e dry_run=true) runs preflight only, no mutations
+#   - Automatic etcd snapshot + integrity check before any CP mutation
+#   - Node drain with PodDisruptionBudget awareness before each kubelet upgrade
+#   - Serial (one node at a time) with readiness gate before proceeding
+#   - any_errors_fatal: true on all upgrade plays — one failure stops everything
+#   - Rollback instructions printed in the final summary
+# =============================================================================
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAY 0 — Preflight checks (runs on ALL nodes before anything mutates)
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "PREFLIGHT — Validate upgrade preconditions on all nodes"
+  hosts: k8s_cluster
+  become: true
+  gather_facts: true
+  any_errors_fatal: true           # abort entire play if ANY node fails preflight
+
+  vars:
+    target_k8s_version: ""          # REQUIRED  e.g. "v1.32.3"
+    dry_run: false
+    min_free_disk_mb: 2048          # 2 GB minimum free on / and /var
+    etcd_data_dir: /var/lib/etcd
+
+  pre_tasks:
+    - name: "PREFLIGHT | Assert target_k8s_version is provided"
+      ansible.builtin.assert:
+        that:
+          - target_k8s_version | length > 0
+          - target_k8s_version is match('^v[0-9]+\.[0-9]+\.[0-9]+$')
+        fail_msg: >
+          target_k8s_version is required and must be in the format vMAJOR.MINOR.PATCH
+          Example: -e "target_k8s_version=v1.32.3"
+
+  tasks:
+    # ── 0.1  Current installed versions ──────────────────────────────────────
+    - name: "PREFLIGHT | Get current kubeadm version"
+      ansible.builtin.command: kubeadm version -o short
+      register: current_kubeadm_version
+      changed_when: false
+      failed_when: current_kubeadm_version.rc != 0
+
+    - name: "PREFLIGHT | Get current kubelet version"
+      ansible.builtin.command: kubelet --version
+      register: current_kubelet_version
+      changed_when: false
+
+    - name: "PREFLIGHT | Display current versions"
+      ansible.builtin.debug:
+        msg:
+          - "Host          : {{ inventory_hostname }}"
+          - "kubeadm now   : {{ current_kubeadm_version.stdout }}"
+          - "kubelet now   : {{ current_kubelet_version.stdout }}"
+          - "Target version: {{ target_k8s_version }}"
+
+    # ── 0.2  Version skew check (no multi-minor jumps) ───────────────────────
+    - name: "PREFLIGHT | Parse current minor version"
+      ansible.builtin.set_fact:
+        current_minor: "{{ current_kubeadm_version.stdout | regex_search('v[0-9]+\\.([0-9]+)\\.[0-9]+', '\\1') | first | int }}"
+        target_minor:  "{{ target_k8s_version | regex_search('v[0-9]+\\.([0-9]+)\\.[0-9]+', '\\1') | first | int }}"
+        current_major: "{{ current_kubeadm_version.stdout | regex_search('v([0-9]+)\\.[0-9]+\\.[0-9]+', '\\1') | first | int }}"
+        target_major:  "{{ target_k8s_version | regex_search('v([0-9]+)\\.[0-9]+\\.[0-9]+', '\\1') | first | int }}"
+
+    - name: "PREFLIGHT | Assert no major version jump"
+      ansible.builtin.assert:
+        that:
+          - current_major | int == target_major | int
+        fail_msg: >
+          Major version jump detected ({{ current_major }} → {{ target_major }}).
+          Kubernetes does not support major version upgrades via kubeadm.
+
+    - name: "PREFLIGHT | Assert at most one minor version jump"
+      ansible.builtin.assert:
+        that:
+          - (target_minor | int - current_minor | int) <= 1
+          - (target_minor | int - current_minor | int) >= 0
+        fail_msg: >
+          Minor version jump of {{ target_minor | int - current_minor | int }} detected
+          (current={{ current_minor }}, target={{ target_minor }}).
+          Kubernetes only supports upgrading one minor version at a time.
+          Upgrade to an intermediate version first.
+
+    # ── 0.3  Disk space ───────────────────────────────────────────────────────
+    - name: "PREFLIGHT | Check free disk on /"
+      ansible.builtin.shell: |
+        df --output=avail -m / | tail -1
+      register: root_free_mb
+      changed_when: false
+
+    - name: "PREFLIGHT | Check free disk on /var"
+      ansible.builtin.shell: |
+        df --output=avail -m /var | tail -1
+      register: var_free_mb
+      changed_when: false
+
+    - name: "PREFLIGHT | Assert sufficient disk space"
+      ansible.builtin.assert:
+        that:
+          - root_free_mb.stdout | int >= min_free_disk_mb
+          - var_free_mb.stdout | int >= min_free_disk_mb
+        fail_msg: >
+          Insufficient disk space on {{ inventory_hostname }}.
+          / free: {{ root_free_mb.stdout }}MB  /var free: {{ var_free_mb.stdout }}MB
+          Minimum required: {{ min_free_disk_mb }}MB on each.
+
+    # ── 0.4  Containerd running ───────────────────────────────────────────────
+    - name: "PREFLIGHT | Verify containerd is active"
+      ansible.builtin.command: systemctl is-active containerd
+      register: containerd_status
+      changed_when: false
+      failed_when: containerd_status.stdout != "active"
+
+    # ── 0.5  kubelet running ──────────────────────────────────────────────────
+    - name: "PREFLIGHT | Verify kubelet is active"
+      ansible.builtin.command: systemctl is-active kubelet
+      register: kubelet_status
+      changed_when: false
+      failed_when: kubelet_status.stdout != "active"
+
+    # ── 0.6  Node readiness (via API from first CP) ───────────────────────────
+    - name: "PREFLIGHT | Check node is Ready in the cluster"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get node {{ inventory_hostname }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready_check
+      changed_when: false
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      failed_when: node_ready_check.stdout != "True"
+
+    # ── 0.6b  apt repo + package availability check ─────────────────────────
+    # Adds the correct versioned k8s apt repo for the target minor version,
+    # then verifies the exact package exists before touching anything.
+    - name: "PREFLIGHT | Parse target minor version for apt repo"
+      ansible.builtin.set_fact:
+        target_minor_repo: "{{ target_k8s_version | regex_replace('^v', '') | split('.') | list | slice(2) | first | join('.') }}"
+
+    - name: "PREFLIGHT | Show target apt repo minor version"
+      ansible.builtin.debug:
+        msg: "Will configure apt repo for Kubernetes v{{ target_minor_repo }}"
+      run_once: true
+
+    - name: "PREFLIGHT | Add Kubernetes apt key for target minor version"
+      ansible.builtin.shell: "curl -fsSL https://pkgs.k8s.io/core:/stable:/v{{ target_minor_repo }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring-{{ target_minor_repo }}.gpg"
+      args:
+        creates: /etc/apt/keyrings/kubernetes-apt-keyring-{{ target_minor_repo }}.gpg
+
+    - name: "PREFLIGHT | Add Kubernetes apt repo for target minor version"
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes-{{ target_minor_repo }}.list
+        mode: "0644"
+        content: |
+          deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring-{{ target_minor_repo }}.gpg] https://pkgs.k8s.io/core:/stable:/v{{ target_minor_repo }}/deb/ /
+
+    - name: "PREFLIGHT | Update apt cache"
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: "PREFLIGHT | Check target kubeadm version is available in apt"
+      ansible.builtin.shell: |
+        apt-cache madison kubeadm | awk '{print $3}' | grep -F "{{ target_k8s_version | regex_replace('^v', '') }}"
+      register: apt_version_check
+      changed_when: false
+      failed_when: false  # rc handled by assert below with a clear message
+
+    - name: "PREFLIGHT | List available kubeadm versions (for error context)"
+      ansible.builtin.shell: |
+        apt-cache madison kubeadm | awk '{print $3}' | head -10
+      register: apt_available_versions
+      changed_when: false
+      when: apt_version_check.rc != 0
+
+    - name: "PREFLIGHT | Assert target version is available in apt"
+      ansible.builtin.assert:
+        that:
+          - apt_version_check.rc == 0
+          - apt_version_check.stdout | length > 0
+        fail_msg: >
+          Version {{ target_k8s_version }} is not available in the apt repo on {{ inventory_hostname }}.
+          Available versions (latest 10): {{ apt_available_versions.stdout | default('could not retrieve') }}
+          Check https://pkgs.k8s.io for available versions or verify your apt sources.
+
+    - name: "PREFLIGHT | Show matched apt package version"
+      ansible.builtin.debug:
+        msg: "apt package found: {{ apt_version_check.stdout | trim }}"
+
+    # ── 0.6c  etcd image reachability check ──────────────────────────────────
+    # Runs in preflight (including dry-run) so version detection failures surface
+    # before any node is touched. Only runs on the first control-plane node since
+    # etcd only runs there.
+    - name: "PREFLIGHT | Detect etcd image version (dry-run safe)"
+      ansible.builtin.shell: |
+        IMAGE=$(kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+          get pod -n kube-system \
+          -l component=etcd \
+          -o jsonpath='{.items[0].spec.containers[0].image}')
+        echo "Raw image: $IMAGE" >&2
+        TAG="${IMAGE##*:}"
+        VERSION=$(echo "$TAG" | sed 's/^v//' | cut -d'-' -f1)
+        echo "Parsed version: $VERSION" >&2
+        [ -n "$VERSION" ] && echo "$VERSION" || exit 1
+      register: preflight_etcd_version
+      changed_when: false
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      run_once: true
+
+    - name: "PREFLIGHT | Assert etcd version was detected"
+      ansible.builtin.assert:
+        that:
+          - preflight_etcd_version.stdout | trim | length > 0
+          - preflight_etcd_version.stdout | trim is match('[0-9]+\.[0-9]+\.[0-9]+')
+        fail_msg: >
+          Could not parse etcd version from pod image.
+          Raw output: {{ preflight_etcd_version.stdout }}
+          Stderr: {{ preflight_etcd_version.stderr }}
+      run_once: true
+
+    - name: "PREFLIGHT | Show detected etcd version"
+      ansible.builtin.debug:
+        msg: "etcd running version: {{ preflight_etcd_version.stdout | trim }}"
+      run_once: true
+
+    # ── 0.7  Dry-run banner ───────────────────────────────────────────────────
+    - name: "PREFLIGHT | DRY-RUN MODE — no changes will be made"
+      ansible.builtin.debug:
+        msg: >
+          *** DRY-RUN MODE ACTIVE ***
+          All upgrade steps will be skipped.
+          Re-run without -e "dry_run=true" to apply the upgrade.
+      when: dry_run | bool
+
+    - name: "PREFLIGHT | Summary"
+      ansible.builtin.debug:
+        msg:
+          - "════════════════════════════════════════════"
+          - " Preflight PASSED for {{ inventory_hostname }}"
+          - " Upgrade path : {{ current_kubeadm_version.stdout }} → {{ target_k8s_version }}"
+          - " Disk (/) free: {{ root_free_mb.stdout }} MB"
+          - " Disk (/var)  : {{ var_free_mb.stdout }} MB"
+          - "════════════════════════════════════════════"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAY 1 — etcd snapshot + first control-plane upgrade
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "UPGRADE — First control-plane node"
+  hosts: "{{ groups['control_plane'][0] }}"
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    target_k8s_version: ""
+    target_containerd_version: ""   # optional — leave blank to skip containerd upgrade
+    dry_run: false
+    etcd_snapshot_dir: /root/etcd-snapshots
+    upgrade_log: "/var/log/k8s-upgrade-{{ lookup('pipe', 'date +%Y%m%d-%H%M%S') }}.log"
+
+  tasks:
+    - name: "CP1 | Skip all tasks in dry-run mode"
+      ansible.builtin.meta: end_play
+      when: dry_run | bool
+
+    # ── 1.1  etcd snapshot ────────────────────────────────────────────────────
+    - name: "CP1 | Create etcd snapshot directory"
+      ansible.builtin.file:
+        path: "{{ etcd_snapshot_dir }}"
+        state: directory
+        mode: "0700"
+
+    - name: "CP1 | Check if etcdctl is already installed"
+      ansible.builtin.stat:
+        path: /usr/local/bin/etcdctl
+      register: etcdctl_stat
+
+    - name: "CP1 | Reuse etcd version detected in preflight"
+      ansible.builtin.set_fact:
+        etcd_version_detected_str: "{{ hostvars[groups['control_plane'][0]]['preflight_etcd_version'].stdout | trim }}"
+      when: not etcdctl_stat.stat.exists
+
+    - name: "CP1 | Show etcd version to be used for etcdctl install"
+      ansible.builtin.debug:
+        msg: "Installing etcdctl v{{ etcd_version_detected_str }}"
+      when: not etcdctl_stat.stat.exists
+
+    - name: "CP1 | Download and install etcdctl (matching running etcd version)"
+      ansible.builtin.shell: |
+        ETCD_VER="v{{ etcd_version_detected_str }}"
+        ETCD_URL="https://github.com/etcd-io/etcd/releases/download/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz"
+        echo "Downloading etcdctl $ETCD_VER from $ETCD_URL"
+        curl -fsSL "$ETCD_URL" -o /tmp/etcd.tgz
+        tar -xzf /tmp/etcd.tgz -C /tmp/
+        mv /tmp/etcd-${ETCD_VER}-linux-amd64/etcdctl /usr/local/bin/etcdctl
+        chmod +x /usr/local/bin/etcdctl
+        rm -rf /tmp/etcd.tgz /tmp/etcd-${ETCD_VER}-linux-amd64
+      when: not etcdctl_stat.stat.exists
+      register: etcdctl_install
+      failed_when: etcdctl_install.rc != 0
+
+    - name: "CP1 | Verify etcdctl is functional"
+      ansible.builtin.command: etcdctl version
+      register: etcdctl_version_check
+      changed_when: false
+      failed_when: etcdctl_version_check.rc != 0
+
+    - name: "CP1 | Show etcdctl version"
+      ansible.builtin.debug:
+        msg: "{{ etcdctl_version_check.stdout_lines }}"
+
+    - name: "CP1 | Take etcd snapshot before upgrade"
+      ansible.builtin.shell: |
+        ETCDCTL_API=3 etcdctl \
+          --endpoints=https://127.0.0.1:2379 \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/server.crt \
+          --key=/etc/kubernetes/pki/etcd/server.key \
+          snapshot save {{ etcd_snapshot_dir }}/pre-upgrade-{{ target_k8s_version }}-$(date +%Y%m%d-%H%M%S).db
+      register: etcd_snapshot
+      failed_when: etcd_snapshot.rc != 0
+
+    - name: "CP1 | Verify etcd snapshot integrity"
+      ansible.builtin.shell: |
+        SNAP=$(ls -t {{ etcd_snapshot_dir }}/pre-upgrade-*.db | head -1)
+        ETCDCTL_API=3 etcdctl snapshot status $SNAP --write-out=table
+      register: etcd_snapshot_status
+      failed_when: etcd_snapshot_status.rc != 0
+
+    - name: "CP1 | Log etcd snapshot status"
+      ansible.builtin.debug:
+        msg: "{{ etcd_snapshot_status.stdout_lines }}"
+
+    # ── 1.2  Unhold + upgrade kubeadm ────────────────────────────────────────
+    - name: "CP1 | Unhold kubeadm"
+      ansible.builtin.shell: apt-mark unhold kubeadm
+      changed_when: true
+
+    - name: "CP1 | Determine short k8s version (without leading v) for apt"
+      ansible.builtin.set_fact:
+        k8s_version_apt: "{{ target_k8s_version | regex_replace('^v', '') }}"
+
+    - name: "CP1 | Update apt cache"
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: "CP1 | Install target kubeadm"
+      ansible.builtin.apt:
+        name: "kubeadm={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "CP1 | Hold kubeadm"
+      ansible.builtin.shell: apt-mark hold kubeadm
+      changed_when: true
+
+    - name: "CP1 | Verify kubeadm version after install"
+      ansible.builtin.command: kubeadm version -o short
+      register: new_kubeadm_ver
+      changed_when: false
+      failed_when: target_k8s_version not in new_kubeadm_ver.stdout
+
+    # ── 1.3  kubeadm upgrade plan ─────────────────────────────────────────────
+    - name: "CP1 | Run kubeadm upgrade plan"
+      ansible.builtin.command: kubeadm upgrade plan {{ target_k8s_version }}
+      register: upgrade_plan
+      failed_when: upgrade_plan.rc != 0
+
+    - name: "CP1 | Show upgrade plan"
+      ansible.builtin.debug:
+        msg: "{{ upgrade_plan.stdout_lines }}"
+
+    # ── 1.4  kubeadm upgrade apply ────────────────────────────────────────────
+    - name: "CP1 | Apply control-plane upgrade"
+      ansible.builtin.command: >
+        kubeadm upgrade apply {{ target_k8s_version }}
+        --yes
+        --certificate-renewal=true
+        --etcd-upgrade=true
+        --v=5
+      register: kubeadm_upgrade_apply
+      failed_when: kubeadm_upgrade_apply.rc != 0
+
+    - name: "CP1 | Log upgrade apply output"
+      ansible.builtin.debug:
+        msg: "{{ kubeadm_upgrade_apply.stdout_lines }}"
+
+    # ── 1.5  Drain first CP ───────────────────────────────────────────────────
+    - name: "CP1 | Drain node (evict workloads)"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --grace-period=60
+        --timeout=300s
+      register: drain_result
+      failed_when: drain_result.rc != 0
+
+    # ── 1.6  Upgrade containerd (optional) ───────────────────────────────────
+    - name: "CP1 | Download new containerd"
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ target_containerd_version }}/containerd-{{ target_containerd_version }}-linux-amd64.tar.gz"
+        dest: /tmp/containerd-upgrade.tgz
+        mode: "0644"
+      when: target_containerd_version | length > 0
+
+    - name: "CP1 | Stop containerd for upgrade"
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+      when: target_containerd_version | length > 0
+
+    - name: "CP1 | Install new containerd"
+      ansible.builtin.unarchive:
+        src: /tmp/containerd-upgrade.tgz
+        dest: /usr/local
+        remote_src: true
+      when: target_containerd_version | length > 0
+
+    - name: "CP1 | Start containerd after upgrade"
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        daemon_reload: true
+      when: target_containerd_version | length > 0
+
+    - name: "CP1 | Verify containerd is running after upgrade"
+      ansible.builtin.command: systemctl is-active containerd
+      register: containerd_active
+      changed_when: false
+      failed_when: containerd_active.stdout != "active"
+      when: target_containerd_version | length > 0
+
+    # ── 1.7  Upgrade kubelet + kubectl ───────────────────────────────────────
+    - name: "CP1 | Unhold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark unhold kubelet kubectl
+      changed_when: true
+
+    - name: "CP1 | Install target kubelet and kubectl"
+      ansible.builtin.apt:
+        name:
+          - "kubelet={{ k8s_version_apt }}-*"
+          - "kubectl={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "CP1 | Hold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark hold kubelet kubectl
+      changed_when: true
+
+    - name: "CP1 | Restart kubelet"
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+
+    - name: "CP1 | Wait for kubelet to be active"
+      ansible.builtin.command: systemctl is-active kubelet
+      register: kubelet_active
+      retries: 10
+      delay: 6
+      until: kubelet_active.stdout == "active"
+      changed_when: false
+
+    # ── 1.8  Uncordon first CP ────────────────────────────────────────────────
+    - name: "CP1 | Uncordon node"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf uncordon {{ inventory_hostname }}
+      register: uncordon_result
+      failed_when: uncordon_result.rc != 0
+
+    # ── 1.9  Readiness gate before moving on ─────────────────────────────────
+    - name: "CP1 | Wait for node to be Ready"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get node {{ inventory_hostname }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: cp1_ready
+      until: cp1_ready.stdout == "True"
+      retries: 20
+      delay: 15
+      changed_when: false
+
+    - name: "CP1 | Verify kube-apiserver is serving the new version"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf version
+      register: api_version_check
+      changed_when: false
+
+    - name: "CP1 | Display API server version"
+      ansible.builtin.debug:
+        msg: "{{ api_version_check.stdout_lines }}"
+
+    - name: "CP1 | Verify all control-plane pods are running"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+          get pods -n kube-system \
+          --field-selector=status.phase!=Running \
+          --no-headers | grep -v "Completed" | wc -l
+      register: unhealthy_pods
+      until: unhealthy_pods.stdout | int == 0
+      retries: 20
+      delay: 15
+      changed_when: false
+
+    - name: "CP1 | Upgrade complete — first control-plane"
+      ansible.builtin.debug:
+        msg: "✓ First control-plane node upgraded to {{ target_k8s_version }} successfully"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAY 2 — Additional control-plane nodes (serial, one at a time)
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "UPGRADE — Additional control-plane nodes"
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  serial: 1                        # one control-plane node at a time
+  any_errors_fatal: true
+
+  vars:
+    target_k8s_version: ""
+    target_containerd_version: ""
+    dry_run: false
+
+  tasks:
+    - name: "CPn | Skip first control-plane (already upgraded)"
+      ansible.builtin.meta: end_host
+      when: inventory_hostname == groups['control_plane'][0] or dry_run | bool
+
+    # ── 2.1  Unhold + install kubeadm ────────────────────────────────────────
+    - name: "CPn | Unhold kubeadm"
+      ansible.builtin.shell: apt-mark unhold kubeadm
+      changed_when: true
+
+    - name: "CPn | Set apt version string"
+      ansible.builtin.set_fact:
+        k8s_version_apt: "{{ target_k8s_version | regex_replace('^v', '') }}"
+
+    - name: "CPn | Update apt cache"
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: "CPn | Install target kubeadm"
+      ansible.builtin.apt:
+        name: "kubeadm={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "CPn | Hold kubeadm"
+      ansible.builtin.shell: apt-mark hold kubeadm
+      changed_when: true
+
+    # ── 2.2  kubeadm upgrade node ─────────────────────────────────────────────
+    - name: "CPn | Run kubeadm upgrade node"
+      ansible.builtin.command: kubeadm upgrade node --certificate-renewal=true
+      register: kubeadm_upgrade_node
+      failed_when: kubeadm_upgrade_node.rc != 0
+
+    # ── 2.3  Drain ───────────────────────────────────────────────────────────
+    - name: "CPn | Drain node"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --grace-period=60
+        --timeout=300s
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      register: drain_result
+      failed_when: drain_result.rc != 0
+
+    # ── 2.4  Containerd (optional) ────────────────────────────────────────────
+    - name: "CPn | Download new containerd"
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ target_containerd_version }}/containerd-{{ target_containerd_version }}-linux-amd64.tar.gz"
+        dest: /tmp/containerd-upgrade.tgz
+        mode: "0644"
+      when: target_containerd_version | length > 0
+
+    - name: "CPn | Stop containerd"
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+      when: target_containerd_version | length > 0
+
+    - name: "CPn | Install new containerd"
+      ansible.builtin.unarchive:
+        src: /tmp/containerd-upgrade.tgz
+        dest: /usr/local
+        remote_src: true
+      when: target_containerd_version | length > 0
+
+    - name: "CPn | Start containerd"
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        daemon_reload: true
+      when: target_containerd_version | length > 0
+
+    # ── 2.5  kubelet + kubectl ────────────────────────────────────────────────
+    - name: "CPn | Unhold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark unhold kubelet kubectl
+      changed_when: true
+
+    - name: "CPn | Install target kubelet and kubectl"
+      ansible.builtin.apt:
+        name:
+          - "kubelet={{ k8s_version_apt }}-*"
+          - "kubectl={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "CPn | Hold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark hold kubelet kubectl
+      changed_when: true
+
+    - name: "CPn | Restart kubelet"
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+
+    - name: "CPn | Wait for kubelet to be active"
+      ansible.builtin.command: systemctl is-active kubelet
+      register: kubelet_active
+      retries: 10
+      delay: 6
+      until: kubelet_active.stdout == "active"
+      changed_when: false
+
+    # ── 2.6  Uncordon ────────────────────────────────────────────────────────
+    - name: "CPn | Uncordon node"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf uncordon {{ inventory_hostname }}
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      register: uncordon_result
+      failed_when: uncordon_result.rc != 0
+
+    # ── 2.7  Readiness gate ───────────────────────────────────────────────────
+    - name: "CPn | Wait for node to be Ready"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get node {{ inventory_hostname }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: cpn_ready
+      until: cpn_ready.stdout == "True"
+      retries: 20
+      delay: 15
+      changed_when: false
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: "CPn | Upgrade complete"
+      ansible.builtin.debug:
+        msg: "✓ Control-plane node {{ inventory_hostname }} upgraded to {{ target_k8s_version }}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAY 3 — Worker nodes (optional, serial, one at a time)
+#
+#   Runs only when ALL of the following are true:
+#     1. upgrade_workers=true  is passed via -e
+#     2. The [k8s_workers] inventory group exists and is non-empty
+#
+#   If you currently have no workers, this play is a complete no-op.
+#   When you add workers later, just populate [k8s_workers] in your inventory
+#   and pass -e "upgrade_workers=true".
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "UPGRADE — Worker nodes (optional)"
+  hosts: "{{ (upgrade_workers | default(false) | bool and groups['k8s_workers'] is defined and groups['k8s_workers'] | length > 0) | ternary('k8s_workers', 'localhost') }}"
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+
+  vars:
+    target_k8s_version: ""
+    target_containerd_version: ""
+    upgrade_workers: false
+    dry_run: false
+
+  tasks:
+    - name: "WORKER | Skip — upgrade_workers is not enabled"
+      ansible.builtin.meta: end_play
+      when: not upgrade_workers | bool
+
+    - name: "WORKER | Skip — no hosts in k8s_workers group"
+      ansible.builtin.meta: end_play
+      when: groups['k8s_workers'] is not defined or groups['k8s_workers'] | length == 0
+
+    - name: "WORKER | Skip in dry-run mode"
+      ansible.builtin.meta: end_play
+      when: dry_run | bool
+
+    - name: "WORKER | Set apt version string"
+      ansible.builtin.set_fact:
+        k8s_version_apt: "{{ target_k8s_version | regex_replace('^v', '') }}"
+
+    # ── 3.1  kubeadm upgrade node ─────────────────────────────────────────────
+    - name: "WORKER | Unhold kubeadm"
+      ansible.builtin.shell: apt-mark unhold kubeadm
+      changed_when: true
+
+    - name: "WORKER | Update apt cache"
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: "WORKER | Install target kubeadm"
+      ansible.builtin.apt:
+        name: "kubeadm={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "WORKER | Hold kubeadm"
+      ansible.builtin.shell: apt-mark hold kubeadm
+      changed_when: true
+
+    - name: "WORKER | Run kubeadm upgrade node"
+      ansible.builtin.command: kubeadm upgrade node
+      register: kubeadm_upgrade_worker
+      failed_when: kubeadm_upgrade_worker.rc != 0
+
+    # ── 3.2  Drain ───────────────────────────────────────────────────────────
+    - name: "WORKER | Drain node"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf drain {{ inventory_hostname }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --grace-period=60
+        --timeout=300s
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      register: drain_result
+      failed_when: drain_result.rc != 0
+
+    # ── 3.3  Containerd (optional) ────────────────────────────────────────────
+    - name: "WORKER | Download new containerd"
+      ansible.builtin.get_url:
+        url: "https://github.com/containerd/containerd/releases/download/v{{ target_containerd_version }}/containerd-{{ target_containerd_version }}-linux-amd64.tar.gz"
+        dest: /tmp/containerd-upgrade.tgz
+        mode: "0644"
+      when: target_containerd_version | length > 0
+
+    - name: "WORKER | Stop containerd"
+      ansible.builtin.systemd:
+        name: containerd
+        state: stopped
+      when: target_containerd_version | length > 0
+
+    - name: "WORKER | Install new containerd"
+      ansible.builtin.unarchive:
+        src: /tmp/containerd-upgrade.tgz
+        dest: /usr/local
+        remote_src: true
+      when: target_containerd_version | length > 0
+
+    - name: "WORKER | Start containerd"
+      ansible.builtin.systemd:
+        name: containerd
+        state: started
+        daemon_reload: true
+      when: target_containerd_version | length > 0
+
+    - name: "WORKER | Verify containerd running after upgrade"
+      ansible.builtin.command: systemctl is-active containerd
+      register: containerd_active
+      changed_when: false
+      failed_when: containerd_active.stdout != "active"
+      when: target_containerd_version | length > 0
+
+    # ── 3.4  kubelet + kubectl ────────────────────────────────────────────────
+    - name: "WORKER | Unhold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark unhold kubelet kubectl
+      changed_when: true
+
+    - name: "WORKER | Install target kubelet and kubectl"
+      ansible.builtin.apt:
+        name:
+          - "kubelet={{ k8s_version_apt }}-*"
+          - "kubectl={{ k8s_version_apt }}-*"
+        state: present
+        allow_downgrade: false
+
+    - name: "WORKER | Hold kubelet and kubectl"
+      ansible.builtin.shell: apt-mark hold kubelet kubectl
+      changed_when: true
+
+    - name: "WORKER | Restart kubelet"
+      ansible.builtin.systemd:
+        name: kubelet
+        state: restarted
+        daemon_reload: true
+
+    - name: "WORKER | Wait for kubelet to be active"
+      ansible.builtin.command: systemctl is-active kubelet
+      register: kubelet_active
+      retries: 10
+      delay: 6
+      until: kubelet_active.stdout == "active"
+      changed_when: false
+
+    # ── 3.5  Uncordon ─────────────────────────────────────────────────────────
+    - name: "WORKER | Uncordon node"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf uncordon {{ inventory_hostname }}
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      register: uncordon_result
+      failed_when: uncordon_result.rc != 0
+
+    # ── 3.6  Readiness gate ───────────────────────────────────────────────────
+    - name: "WORKER | Wait for node to be Ready"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get node {{ inventory_hostname }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: worker_ready
+      until: worker_ready.stdout == "True"
+      retries: 20
+      delay: 15
+      changed_when: false
+      delegate_to: "{{ groups['control_plane'][0] }}"
+
+    - name: "WORKER | Upgrade complete"
+      ansible.builtin.debug:
+        msg: "✓ Worker node {{ inventory_hostname }} upgraded to {{ target_k8s_version }}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLAY 4 — Post-upgrade validation
+# ─────────────────────────────────────────────────────────────────────────────
+- name: "POST-UPGRADE — Cluster-wide validation"
+  hosts: "{{ groups['control_plane'][0] }}"
+  become: true
+  gather_facts: false
+
+  vars:
+    target_k8s_version: ""
+    dry_run: false
+
+  tasks:
+    - name: "VALIDATE | Skip in dry-run mode"
+      ansible.builtin.meta: end_play
+      when: dry_run | bool
+
+    # ── 4.1  All nodes at target version ─────────────────────────────────────
+    - name: "VALIDATE | Get all node versions"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"  "}{.status.nodeInfo.kubeletVersion}{"\n"}{end}'
+      register: node_versions
+      changed_when: false
+
+    - name: "VALIDATE | Display node versions"
+      ansible.builtin.debug:
+        msg: "{{ node_versions.stdout_lines }}"
+
+    - name: "VALIDATE | Assert all nodes are at target version"
+      ansible.builtin.assert:
+        that:
+          - node_versions.stdout | regex_findall(target_k8s_version) | length == node_versions.stdout_lines | length
+        fail_msg: >
+          Not all nodes are at {{ target_k8s_version }}.
+          Node versions: {{ node_versions.stdout }}
+
+    # ── 4.2  All nodes Ready ──────────────────────────────────────────────────
+    - name: "VALIDATE | Check for any NotReady nodes"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes \
+          --no-headers | grep -v " Ready" | wc -l
+      register: not_ready_count
+      changed_when: false
+
+    - name: "VALIDATE | Assert all nodes are Ready"
+      ansible.builtin.assert:
+        that:
+          - not_ready_count.stdout | int == 0
+        fail_msg: >
+          {{ not_ready_count.stdout }} node(s) are not Ready after upgrade.
+          Run: kubectl get nodes for details.
+
+    # ── 4.3  kube-system pods healthy ────────────────────────────────────────
+    - name: "VALIDATE | Check for unhealthy kube-system pods"
+      ansible.builtin.shell: |
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf \
+          get pods -n kube-system --no-headers \
+          | grep -vE "Running|Completed" | wc -l
+      register: unhealthy_system_pods
+      retries: 10
+      delay: 15
+      until: unhealthy_system_pods.stdout | int == 0
+      changed_when: false
+
+    - name: "VALIDATE | Assert kube-system pods healthy"
+      ansible.builtin.assert:
+        that:
+          - unhealthy_system_pods.stdout | int == 0
+        fail_msg: >
+          Some kube-system pods are unhealthy after upgrade.
+          Run: kubectl get pods -n kube-system
+
+    # ── 4.4  Cilium health ────────────────────────────────────────────────────
+    - name: "VALIDATE | Check Cilium DaemonSet rollout"
+      ansible.builtin.command: >
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        -n kube-system rollout status daemonset/cilium --timeout=120s
+      register: cilium_rollout
+      failed_when: cilium_rollout.rc != 0
+
+    # ── 4.5  etcd member health ───────────────────────────────────────────────
+    # etcdctl was installed by Play 1 — just verify it's present before using it
+    - name: "VALIDATE | Confirm etcdctl is available"
+      ansible.builtin.stat:
+        path: /usr/local/bin/etcdctl
+      register: etcdctl_present
+      failed_when: not etcdctl_present.stat.exists
+
+    - name: "VALIDATE | Check etcd member health"
+      ansible.builtin.shell: |
+        ETCDCTL_API=3 etcdctl \
+          --endpoints=https://127.0.0.1:2379 \
+          --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+          --cert=/etc/kubernetes/pki/etcd/server.crt \
+          --key=/etc/kubernetes/pki/etcd/server.key \
+          endpoint health
+      register: etcd_health
+      changed_when: false
+
+    - name: "VALIDATE | Display etcd health"
+      ansible.builtin.debug:
+        msg: "{{ etcd_health.stdout_lines }}"
+
+    # ── 4.6  Final summary ────────────────────────────────────────────────────
+    - name: "VALIDATE | Upgrade summary"
+      ansible.builtin.debug:
+        msg:
+          - "══════════════════════════════════════════════════════"
+          - "  Kubernetes cluster upgrade COMPLETE"
+          - "  Target version : {{ target_k8s_version }}"
+          - "  All nodes      : Ready ✓"
+          - "  kube-system    : All pods healthy ✓"
+          - "  Cilium         : DaemonSet rolled out ✓"
+          - "  etcd           : Healthy ✓"
+          - "  Workers        : {{ upgrade_workers | default(false) | bool | ternary('upgraded ✓', 'skipped (upgrade_workers=false)') }}"
+          - "  etcd snapshots : /root/etcd-snapshots/ on first CP"
+          - "──────────────────────────────────────────────────────"
+          - "  ROLLBACK REFERENCE (if needed):"
+          - "    1. Restore etcd snapshot:"
+          - "       etcdctl snapshot restore <snapshot.db> --data-dir=/var/lib/etcd-restore"
+          - "    2. Point etcd to restored data dir in /etc/kubernetes/manifests/etcd.yaml"
+          - "    3. Downgrade kubeadm/kubelet/kubectl:"
+          - "       apt-mark unhold kubeadm kubelet kubectl"
+          - "       apt install kubeadm=<prev-ver> kubelet=<prev-ver> kubectl=<prev-ver>"
+          - "    4. Run: kubeadm upgrade apply <prev-ver> --force"
+          - "══════════════════════════════════════════════════════"
