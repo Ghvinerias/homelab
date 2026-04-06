@@ -57,7 +57,7 @@ directly into the encrypted payload sent to the GitHub API.
 .github/
 ├── workflows/
 │   └── provision-repo.yml    # Workflow definition
-└── scripts/
+└── custom-tooling/bws_secret_injector/
     ├── requirements.txt       # requests, PyNaCl
     └── inject_secret.py       # Encrypts and injects the secret
 ```
