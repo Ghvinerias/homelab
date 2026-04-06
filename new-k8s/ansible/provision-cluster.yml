@@ -4,7 +4,7 @@
   gather_facts: false
 
   vars:
-    KUBE_VERSION: "v1.31.0"
+    KUBE_VERSION: "v1.35.3"
     CONTAINERD_VERSION: "1.7.22"
     RUNC_VERSION: "1.2.1"
     CNI_PLUGINS_VERSION: "1.5.1"
@@ -563,7 +563,7 @@
     kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('./kube_config', true) }}"
     kube_context: ""
     lb_ip_range_start: "10.17.88.30"
-    lb_ip_range_end:   "10.17.88.250"
+    lb_ip_range_end:   "10.17.88.200"
     lb_interface: "{{ hostvars[groups['control_plane'][0]].cilium_devices_interface | default('ens19') }}"
 
   tasks:
