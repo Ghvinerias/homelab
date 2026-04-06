@@ -21,16 +21,19 @@
     # Optional: Enable and define external node_exporter hosts
     enable_external_nodeexporter: true
     external_nodeexporter_targets:
-      - "10.10.10.13:9400"
-      - "10.10.10.13:9100"
-      - "10.10.10.13:9835"
+      - "10.10.10.48:9101"
+      - "10.10.10.49:9101"
+      - "10.10.10.50:9101"
+      - "10.10.10.51:9101"
+      - "10.10.10.52:9101"
+      - "10.10.10.53:9101"
 
   tasks:
     # Inline additionalScrapeConfigs for external node_exporter hosts
     - name: Set additional scrape configs for external node_exporters
       set_fact:
         external_additional_scrape_configs:
-          - job_name: 'external-node-exporters'
+          - job_name: "external-node-exporters"
             scheme: http
             metrics_path: /metrics
             static_configs:
@@ -177,7 +180,7 @@
                   hosts:
                     - "{{ prometheus_ingress_host }}"
             prometheusSpec:
-              retention: 15d
+              retention: 5d
               # Enable remote write receiver for OTEL
               enableRemoteWriteReceiver: true
               # Adjust resources for homelab-scale
@@ -195,7 +198,7 @@
                     accessModes: ["ReadWriteOnce"]
                     resources:
                       requests:
-                        storage: 4Gi
+                        storage: 8Gi
               # Scrape your own ServiceMonitors/PodMonitors without extra labels
               serviceMonitorSelector: {}
               serviceMonitorNamespaceSelector: {}
@@ -275,12 +278,12 @@
         values:
           mode: deployment
           replicaCount: 1
-          
+
           # Image configuration (required)
           image:
             repository: otel/opentelemetry-collector-contrib
             tag: 0.115.1
-          
+
           # Allow scheduling on control-plane nodes
           tolerations:
             - key: "node-role.kubernetes.io/control-plane"
@@ -289,7 +292,7 @@
             - key: "node-role.kubernetes.io/master"
               operator: "Exists"
               effect: "NoSchedule"
-          
+
           # Resource limits for homelab
           resources:
             requests:
@@ -298,11 +301,11 @@
             limits:
               cpu: 500m
               memory: 512Mi
-          
+
           # Service configuration
           service:
             type: ClusterIP
-          
+
           # Ports for OTLP receivers
           ports:
             otlp:
@@ -320,7 +323,7 @@
               containerPort: 8888
               servicePort: 8888
               protocol: TCP
-          
+
           # OpenTelemetry Collector configuration
           config:
             receivers:
@@ -330,7 +333,7 @@
                     endpoint: 0.0.0.0:4317
                   http:
                     endpoint: 0.0.0.0:4318
-            
+
             processors:
               batch:
                 timeout: 10s
@@ -338,29 +341,29 @@
               memory_limiter:
                 check_interval: 5s
                 limit_mib: 400
-            
+
             exporters:
               # Export metrics to Prometheus
               prometheus:
                 endpoint: 0.0.0.0:8889
                 namespace: otel
-              
+
               # Export metrics via remote write to Prometheus
               prometheusremotewrite:
                 endpoint: http://kube-prometheus-stack-prometheus.{{ deployment_namespace }}.svc.cluster.local:9090/api/v1/write
                 tls:
                   insecure: true
-              
+
               # Export logs to Loki
               loki:
                 endpoint: http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push
                 tls:
                   insecure: true
-              
+
               # Debug exporter for troubleshooting
               debug:
                 verbosity: normal
-            
+
             service:
               pipelines:
                 traces:
@@ -375,13 +378,13 @@
                   receivers: [otlp]
                   processors: [memory_limiter, batch]
                   exporters: [loki, debug]
-          
+
           # ServiceMonitor for Prometheus to scrape otel collector metrics
           serviceMonitor:
             enabled: true
             additionalLabels:
               release: kube-prometheus-stack
-        
+
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
         wait: true
