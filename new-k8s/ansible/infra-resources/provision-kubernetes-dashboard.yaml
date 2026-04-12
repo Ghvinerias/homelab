@@ -1,0 +1,182 @@
+---
+- name: Deploy Kubernetes Dashboard with Helm
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: ""   # Set to your context if needed, else leave blank
+    deployment_namespace: "kubernetes-dashboard"
+    infisical_host_api: "https://infisical.infra.slick.ge/api"
+    identity_id: "998c1306-87ff-4b1e-9225-2f82ef8d5fff"
+    project_slug: "infra-resources-b-ou-q"
+    env_slug: "homelablocal"
+    secrets_path: "/kubernetes-dashboard"
+    kubernetes_dashboard_ingress_host: "kubernetes-dashboard.infra.k8s.slick.ge"
+    kubernetes_dashboard_chart_ref: "https://github.com/kubernetes-retired/dashboard/releases/download/kubernetes-dashboard-7.14.0/kubernetes-dashboard-7.14.0.tgz"
+
+  tasks:
+    - name: Create kubernetes-dashboard namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy Kubernetes Dashboard via Helm
+      kubernetes.core.helm:
+        name: kubernetes-dashboard
+        chart_ref: "{{ kubernetes_dashboard_chart_ref }}"
+        release_namespace: "{{ deployment_namespace }}"
+        create_namespace: true
+        values:
+          app:
+            ingress:
+              enabled: true
+              ingressClassName: nginx
+              useDefaultIngressClass: false
+              useDefaultAnnotations: false
+              pathType: Prefix
+              path: /
+              issuer:
+                name: letsencrypt-prod
+                scope: cluster
+              hosts:
+                - "{{ kubernetes_dashboard_ingress_host }}"
+              tls:
+                enabled: true
+                secretName: kubernetes-dashboard-tls
+          rbac:
+            create: true
+            clusterReadOnlyRole: false
+          serviceAccount:
+            create: true
+            name: kubernetes-dashboard
+          web:
+            containers:
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+          api:
+            containers:
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+          metricsScraper:
+            enabled: true
+            containers:
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 200m
+                  memory: 256Mi
+          nginx:
+            enabled: false
+          cert-manager:
+            enabled: false
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+        wait: true
+        atomic: true
+
+    - name: Deploy Kubernetes Dashboard Ingress
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: kubernetes-dashboard
+            namespace: "{{ deployment_namespace }}"
+            annotations:
+              cert-manager.io/cluster-issuer: "letsencrypt-prod"
+              kubernetes.io/tls-acme: "true"
+              nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+          spec:
+            ingressClassName: nginx
+            tls:
+              - hosts:
+                  - "{{ kubernetes_dashboard_ingress_host }}"
+                secretName: kubernetes-dashboard-tls
+            rules:
+              - host: "{{ kubernetes_dashboard_ingress_host }}"
+                http:
+                  paths:
+                    - path: /
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: kubernetes-dashboard-kong-proxy
+                          port:
+                            number: 443
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create dashboard-admin ServiceAccount
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: dashboard-admin
+            namespace: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Create dashboard-admin ClusterRoleBinding
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: dashboard-admin
+          subjects:
+            - kind: ServiceAccount
+              name: dashboard-admin
+              namespace: "{{ deployment_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for kubernetes-dashboard-web deployment to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ deployment_namespace }}"
+        name: kubernetes-dashboard-web
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: dashboard_deployment
+      until: dashboard_deployment.resources[0].status.availableReplicas | default(0) >= 1
+      retries: 30
+      delay: 10
+
+    - name: Display Kubernetes Dashboard access information
+      debug:
+        msg:
+          - "Kubernetes Dashboard deployed successfully!"
+          - ""
+          - "Access Information:"
+          - "  - Web UI: https://{{ kubernetes_dashboard_ingress_host }}"
+          - "  - Internal Service: kubernetes-dashboard-kong-proxy.{{ deployment_namespace }}.svc.cluster.local"
+          - ""
+          - "Authentication: run 'kubectl -n {{ deployment_namespace }} create token dashboard-admin' to get a login token"
