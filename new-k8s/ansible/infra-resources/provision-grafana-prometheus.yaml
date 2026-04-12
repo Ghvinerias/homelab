@@ -16,7 +16,7 @@
     grafana_ingress_host: "grafana.infra.k8s.slick.ge"
     prometheus_ingress_host: "prometheus.infra.k8s.slick.ge"
     alertmanager_ingress_host: "alertmanager.infra.k8s.slick.ge"
-    otel_collector_ingress_host: "otel.infra.k8s.slick.ge"
+    alloy_ingress_host: "alloy.infra.k8s.slick.ge"
 
     # Optional: Enable and define external node_exporter hosts
     enable_external_nodeexporter: true
@@ -29,7 +29,9 @@
       - "10.10.10.53:9101"
 
   tasks:
-    # Inline additionalScrapeConfigs for external node_exporter hosts
+    # Inline additionalScrapeConfigs for external node_exporter hosts.
+    # These targets are also scraped by Alloy directly; this block keeps
+    # them visible to the Prometheus Operator for federation / rule evaluation.
     - name: Set additional scrape configs for external node_exporters
       set_fact:
         external_additional_scrape_configs:
@@ -39,6 +41,7 @@
             static_configs:
               - targets: "{{ external_nodeexporter_targets }}"
       when: enable_external_nodeexporter
+
     - name: Create monitoring namespace
       kubernetes.core.k8s:
         state: present
@@ -102,10 +105,10 @@
         name: prometheus-community
         repo_url: https://prometheus-community.github.io/helm-charts
 
-    - name: Ensure open-telemetry Helm repo is present
+    - name: Ensure grafana Helm repo is present
       kubernetes.core.helm_repository:
-        name: open-telemetry
-        repo_url: https://open-telemetry.github.io/opentelemetry-helm-charts
+        name: grafana
+        repo_url: https://grafana.github.io/helm-charts
 
     - name: Deploy kube-prometheus-stack via Helm
       kubernetes.core.helm:
@@ -181,7 +184,7 @@
                     - "{{ prometheus_ingress_host }}"
             prometheusSpec:
               retention: 5d
-              # Enable remote write receiver for OTEL
+              # Enable remote write receiver for Alloy
               enableRemoteWriteReceiver: true
               # Adjust resources for homelab-scale
               resources:
@@ -269,22 +272,120 @@
         atomic: true
         update_repo_cache: true
 
-    - name: Deploy OpenTelemetry Collector via Helm
+    - name: Deploy Grafana Alloy via Helm
       kubernetes.core.helm:
-        name: opentelemetry-collector
-        chart_ref: open-telemetry/opentelemetry-collector
+        name: alloy
+        timeout: 20m
+        wait: 20m
+        chart_ref: grafana/alloy
         release_namespace: "{{ deployment_namespace }}"
         create_namespace: true
         values:
-          mode: deployment
-          replicaCount: 1
+          # Grafana Alloy values override for homelab
+          # Chart: grafana/alloy
+          # Alloy replaces the OpenTelemetry Collector, handling OTLP ingestion,
+          # metric remote-write to Prometheus, and log forwarding to Loki in a
+          # single Grafana-native agent binary.
+          alloy:
+            configMap:
+              content: |
+                // ---------------------------------------------------------------------------
+                // OTLP receivers — accept gRPC and HTTP from instrumented workloads
+                // ---------------------------------------------------------------------------
+                otelcol.receiver.otlp "default" {
+                  grpc {
+                    endpoint = "0.0.0.0:4317"
+                  }
+                  http {
+                    endpoint = "0.0.0.0:4318"
+                  }
+                  output {
+                    metrics = [otelcol.processor.memory_limiter.default.input]
+                    logs    = [otelcol.processor.memory_limiter.default.input]
+                    traces  = [otelcol.processor.memory_limiter.default.input]
+                  }
+                }
 
-          # Image configuration (required)
-          image:
-            repository: otel/opentelemetry-collector-contrib
-            tag: 0.115.1
+                // ---------------------------------------------------------------------------
+                // Processors — guard memory then batch before export
+                // ---------------------------------------------------------------------------
+                otelcol.processor.memory_limiter "default" {
+                  check_interval         = "5s"
+                  limit_mib              = 400
+                  spike_limit_percentage = 20
+                  output {
+                    metrics = [otelcol.processor.batch.default.input]
+                    logs    = [otelcol.processor.batch.default.input]
+                    traces  = [otelcol.processor.batch.default.input]
+                  }
+                }
 
-          # Allow scheduling on control-plane nodes
+                otelcol.processor.batch "default" {
+                  timeout         = "10s"
+                  send_batch_size = 1024
+                  output {
+                    metrics = [otelcol.exporter.prometheusremotewrite.prom.input]
+                    logs    = [otelcol.exporter.loki.default.input]
+                    traces  = [otelcol.exporter.debug.default.input]
+                  }
+                }
+
+                // ---------------------------------------------------------------------------
+                // Exporters
+                // ---------------------------------------------------------------------------
+
+                // Remote-write metrics to the in-cluster Prometheus instance
+                otelcol.exporter.prometheusremotewrite "prom" {
+                  endpoint {
+                    url = "http://kube-prometheus-stack-prometheus.{{ deployment_namespace }}.svc.cluster.local:9090/api/v1/write"
+                    tls_config {
+                      insecure_skip_verify = true
+                    }
+                  }
+                }
+
+                // Forward logs to Loki via the gateway
+                otelcol.exporter.loki "default" {
+                  forward_to = [loki.write.default.receiver]
+                }
+
+                loki.write "default" {
+                  endpoint {
+                    url = "http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push"
+                  }
+                }
+
+                // Debug exporter for troubleshooting — set verbosity to "detailed" when needed
+                otelcol.exporter.debug "default" {
+                  verbosity = "normal"
+                }
+
+                // ---------------------------------------------------------------------------
+                // External node_exporter scraping
+                // Targets are defined in vars and templated in below so the Alloy config
+                // stays the single source of truth for those hosts.
+                // ---------------------------------------------------------------------------
+                {% if enable_external_nodeexporter %}
+                prometheus.scrape "external_node_exporters" {
+                  targets = [
+                    {% for target in external_nodeexporter_targets %}
+                    { "__address__" = "{{ target }}" },
+                    {% endfor %}
+                  ]
+                  job_name     = "external-node-exporters"
+                  scheme       = "http"
+                  metrics_path = "/metrics"
+                  forward_to   = [prometheus.remote_write.prom.receiver]
+                }
+
+                prometheus.remote_write "prom" {
+                  endpoint {
+                    url = "http://kube-prometheus-stack-prometheus.{{ deployment_namespace }}.svc.cluster.local:9090/api/v1/write"
+                  }
+                }
+                {% endif %}
+
+          # Allow scheduling on control-plane nodes (mirrors previous OTEL tolerations)
           tolerations:
             - key: "node-role.kubernetes.io/control-plane"
               operator: "Exists"
@@ -293,7 +394,7 @@
               operator: "Exists"
               effect: "NoSchedule"
 
-          # Resource limits for homelab
+          # Resource limits for homelab-scale
           resources:
             requests:
               cpu: 100m
@@ -302,84 +403,25 @@
               cpu: 500m
               memory: 512Mi
 
-          # Service configuration
           service:
             type: ClusterIP
 
-          # Ports for OTLP receivers
+          # Expose OTLP ports so existing instrumentation endpoints are unchanged
           ports:
-            otlp:
-              enabled: true
-              containerPort: 4317
-              servicePort: 4317
+            - name: otlp-grpc
+              port: 4317
+              targetPort: 4317
               protocol: TCP
-            otlp-http:
-              enabled: true
-              containerPort: 4318
-              servicePort: 4318
+            - name: otlp-http
+              port: 4318
+              targetPort: 4318
               protocol: TCP
-            metrics:
-              enabled: true
-              containerPort: 8888
-              servicePort: 8888
+            - name: metrics
+              port: 12345 # Alloy's built-in self-metrics endpoint
+              targetPort: 12345
               protocol: TCP
 
-          # OpenTelemetry Collector configuration
-          config:
-            receivers:
-              otlp:
-                protocols:
-                  grpc:
-                    endpoint: 0.0.0.0:4317
-                  http:
-                    endpoint: 0.0.0.0:4318
-
-            processors:
-              batch:
-                timeout: 10s
-                send_batch_size: 1024
-              memory_limiter:
-                check_interval: 5s
-                limit_mib: 400
-
-            exporters:
-              # Export metrics to Prometheus
-              prometheus:
-                endpoint: 0.0.0.0:8889
-                namespace: otel
-
-              # Export metrics via remote write to Prometheus
-              prometheusremotewrite:
-                endpoint: http://kube-prometheus-stack-prometheus.{{ deployment_namespace }}.svc.cluster.local:9090/api/v1/write
-                tls:
-                  insecure: true
-
-              # Export logs to Loki
-              loki:
-                endpoint: http://loki-gateway.logging.svc.cluster.local/loki/api/v1/push
-                tls:
-                  insecure: true
-
-              # Debug exporter for troubleshooting
-              debug:
-                verbosity: normal
-
-            service:
-              pipelines:
-                traces:
-                  receivers: [otlp]
-                  processors: [memory_limiter, batch]
-                  exporters: [debug]
-                metrics:
-                  receivers: [otlp]
-                  processors: [memory_limiter, batch]
-                  exporters: [prometheus, prometheusremotewrite]
-                logs:
-                  receivers: [otlp]
-                  processors: [memory_limiter, batch]
-                  exporters: [loki, debug]
-
-          # ServiceMonitor for Prometheus to scrape otel collector metrics
+          # ServiceMonitor so Prometheus scrapes Alloy's own metrics
           serviceMonitor:
             enabled: true
             additionalLabels:
@@ -388,3 +430,5 @@
         kubeconfig: "{{ kubeconfig }}"
         context: "{{ kube_context if kube_context else omit }}"
         wait: true
+        atomic: true
+        update_repo_cache: true
