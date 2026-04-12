@@ -1,0 +1,148 @@
+---
+- name: Deploy HPA with direct manifests
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  become: false
+  vars:
+    kubeconfig: "{{ lookup('env', 'KUBECONFIG') | default('~/.kube/config', true) }}"
+    kube_context: ""   # Set to your context if needed, else leave blank
+    deployment_namespace: "hpa"
+
+  tasks:
+    - name: Create hpa namespace
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ deployment_namespace }}"
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy hpa-example Deployment
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: hpa-example
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app.kubernetes.io/name: hpa-example
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app.kubernetes.io/name: hpa-example
+            template:
+              metadata:
+                labels:
+                  app.kubernetes.io/name: hpa-example
+              spec:
+                containers:
+                  - name: hpa-example
+                    image: registry.k8s.io/hpa-example
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - name: http
+                        containerPort: 80
+                        protocol: TCP
+                    resources:
+                      requests:
+                        cpu: 50m
+                        memory: 128Mi
+                      limits:
+                        cpu: 200m
+                        memory: 256Mi
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy hpa-example Service
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: hpa-example
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app.kubernetes.io/name: hpa-example
+          spec:
+            type: ClusterIP
+            selector:
+              app.kubernetes.io/name: hpa-example
+            ports:
+              - name: http
+                port: 80
+                targetPort: http
+                protocol: TCP
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Deploy HorizontalPodAutoscaler for hpa-example
+      kubernetes.core.k8s:
+        state: present
+        definition:
+          apiVersion: autoscaling/v2
+          kind: HorizontalPodAutoscaler
+          metadata:
+            name: hpa-example
+            namespace: "{{ deployment_namespace }}"
+            labels:
+              app.kubernetes.io/name: hpa-example
+          spec:
+            scaleTargetRef:
+              apiVersion: apps/v1
+              kind: Deployment
+              name: hpa-example
+            minReplicas: 1
+            maxReplicas: 5
+            metrics:
+              - type: Resource
+                resource:
+                  name: cpu
+                  target:
+                    type: Utilization
+                    averageUtilization: 50
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+
+    - name: Wait for hpa-example deployment to be ready
+      kubernetes.core.k8s_info:
+        kind: Deployment
+        namespace: "{{ deployment_namespace }}"
+        name: hpa-example
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: hpa_example_deployment
+      until: hpa_example_deployment.resources[0].status.availableReplicas | default(0) >= 1
+      retries: 30
+      delay: 10
+
+    - name: Wait for hpa-example HorizontalPodAutoscaler to be created
+      kubernetes.core.k8s_info:
+        kind: HorizontalPodAutoscaler
+        namespace: "{{ deployment_namespace }}"
+        name: hpa-example
+        kubeconfig: "{{ kubeconfig }}"
+        context: "{{ kube_context if kube_context else omit }}"
+      register: hpa_resource
+      until: hpa_resource.resources | length > 0
+      retries: 30
+      delay: 10
+      failed_when: hpa_resource.resources | length == 0
+
+    - name: Display HPA access information
+      debug:
+        msg:
+          - "HPA deployed successfully!"
+          - ""
+          - "Access Information:"
+          - "  - Workload Service: hpa-example.{{ deployment_namespace }}.svc.cluster.local"
+          - "  - HPA Resource: hpa-example (min: 1, max: 5, CPU target: 50%)"
+          - ""
+          - "Authentication: no credentials required"
