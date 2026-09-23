@@ -12,6 +12,9 @@ jobs:
   provision:
     name: "Provision ${{ inputs.target_repo }}"
     runs-on: ubuntu-latest
+
+    # This controls only the built-in GITHUB_TOKEN.
+    # The GitHub App token has its own permissions.
     permissions:
       contents: read
 
@@ -19,22 +22,51 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Fail fast with a clear message if either secret is not configured.
-      # GitHub passes empty string for unset secrets — this catches that.
-      - name: Preflight — verify secrets are set
+      - name: Preflight — verify configuration
         env:
           BW_ACCESS_TOKEN: ${{ secrets.BW_ACCESS_TOKEN }}
-          GH_PROVISIONER_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
+          GH_APP_CLIENT_ID: ${{ vars.GH_PROVISIONER_APP_CLIENT_ID }}
+          GH_APP_PRIVATE_KEY: ${{ secrets.GH_PROVISIONER_APP_PRIVATE_KEY }}
+          TARGET_REPO: ${{ inputs.target_repo }}
+          EXPECTED_OWNER: ${{ github.repository_owner }}
         run: |
           missing=()
-          [[ -z "$BW_ACCESS_TOKEN" ]]   && missing+=("BW_ACCESS_TOKEN")
-          [[ -z "$GH_PROVISIONER_PAT" ]] && missing+=("GH_PROVISIONER_PAT")
+
+          [[ -z "$BW_ACCESS_TOKEN" ]] && missing+=("BW_ACCESS_TOKEN")
+          [[ -z "$GH_APP_CLIENT_ID" ]] && missing+=("GH_PROVISIONER_APP_CLIENT_ID")
+          [[ -z "$GH_APP_PRIVATE_KEY" ]] && missing+=("GH_PROVISIONER_APP_PRIVATE_KEY")
+
           if [[ ${#missing[@]} -gt 0 ]]; then
-            echo "::error::The following secrets are not set on this repository: ${missing[*]}"
-            echo "Go to Settings → Secrets and variables → Actions and add them."
+            echo "::error::The following configuration values are missing: ${missing[*]}"
             exit 1
           fi
-          echo "Preflight passed — both secrets are present."
+
+          TARGET_OWNER="${TARGET_REPO%%/*}"
+          TARGET_NAME="${TARGET_REPO#*/}"
+
+          if [[ "$TARGET_OWNER" == "$TARGET_REPO" || -z "$TARGET_NAME" ]]; then
+            echo "::error::target_repo must be in owner/repo format."
+            exit 1
+          fi
+
+          if [[ "$TARGET_OWNER" != "$EXPECTED_OWNER" ]]; then
+            echo "::error::Target repository must belong to organization '$EXPECTED_OWNER'."
+            exit 1
+          fi
+
+          echo "Preflight passed."
+
+      # Generate a short-lived GitHub App installation token.
+      # The token is restricted to only the target repository.
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.GH_PROVISIONER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.GH_PROVISIONER_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.target_repo }}
+          permission-secrets: write
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -44,11 +76,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r custom-tooling/bws_secret_injector/requirements.txt
 
-      # Copy BW_ACCESS_TOKEN from this repo's secrets into the target repo
-      # under the same name, encrypted with the target repo's NaCl public key.
+      # Copy BW_ACCESS_TOKEN from this repository into the target repository.
+      # GH_PAT is now a short-lived GitHub App installation token rather
+      # than a personal access token.
       - name: Copy BW_ACCESS_TOKEN to target repo
         env:
-          GH_PAT: ${{ secrets.GH_PROVISIONER_PAT }}
+          GH_PAT: ${{ steps.app-token.outputs.token }}
           TARGET_REPO: ${{ inputs.target_repo }}
           SECRET_NAME: "BW_ACCESS_TOKEN"
           SECRET_VALUE: ${{ secrets.BW_ACCESS_TOKEN }}
@@ -57,9 +90,10 @@ jobs:
       - name: Summary
         if: success()
         run: |
-          echo "### Provisioning complete :white_check_mark:" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-          echo "| Target repo | \`${{ inputs.target_repo }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Secret copied | \`BW_ACCESS_TOKEN\` |" >> $GITHUB_STEP_SUMMARY
+          echo "### Provisioning complete :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Target repo | \`${{ inputs.target_repo }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Secret copied | \`BW_ACCESS_TOKEN\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Authentication | GitHub App |" >> "$GITHUB_STEP_SUMMARY"
