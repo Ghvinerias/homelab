@@ -13,87 +13,150 @@ jobs:
     name: "Provision ${{ inputs.target_repo }}"
     runs-on: ubuntu-latest
 
-    # This controls only the built-in GITHUB_TOKEN.
-    # The GitHub App token has its own permissions.
+    # Permissions for this workflow's built-in GITHUB_TOKEN.
+    # The GitHub App token below has its own permissions.
     permissions:
       contents: read
 
     steps:
+      # ------------------------------------------------------------
+      # Checkout the repository containing the provisioning scripts
+      # ------------------------------------------------------------
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ------------------------------------------------------------
+      # Validate configuration and target repository
+      # ------------------------------------------------------------
       - name: Preflight — verify configuration
+        id: preflight
+        shell: bash
         env:
           BW_ACCESS_TOKEN: ${{ secrets.BW_ACCESS_TOKEN }}
-          GH_APP_CLIENT_ID: ${{ vars.GH_PROVISIONER_APP_CLIENT_ID }}
+          GH_APP_CLIENT_ID: ${{ secrets.GH_PROVISIONER_APP_CLIENT_ID }}
           GH_APP_PRIVATE_KEY: ${{ secrets.GH_PROVISIONER_APP_PRIVATE_KEY }}
+
           TARGET_REPO: ${{ inputs.target_repo }}
-          EXPECTED_OWNER: ${{ github.repository_owner }}
+          EXPECTED_OWNER: ${{ vars.GH_PROVISIONER_ORG }}
+
         run: |
+          set -euo pipefail
+
           missing=()
 
-          [[ -z "$BW_ACCESS_TOKEN" ]] && missing+=("BW_ACCESS_TOKEN")
-          [[ -z "$GH_APP_CLIENT_ID" ]] && missing+=("GH_PROVISIONER_APP_CLIENT_ID")
-          [[ -z "$GH_APP_PRIVATE_KEY" ]] && missing+=("GH_PROVISIONER_APP_PRIVATE_KEY")
+          [[ -z "$BW_ACCESS_TOKEN" ]] && \
+            missing+=("BW_ACCESS_TOKEN")
+
+          [[ -z "$GH_APP_CLIENT_ID" ]] && \
+            missing+=("GH_PROVISIONER_APP_CLIENT_ID")
+
+          [[ -z "$GH_APP_PRIVATE_KEY" ]] && \
+            missing+=("GH_PROVISIONER_APP_PRIVATE_KEY")
+
+          [[ -z "$EXPECTED_OWNER" ]] && \
+            missing+=("GH_PROVISIONER_ORG")
 
           if [[ ${#missing[@]} -gt 0 ]]; then
             echo "::error::The following configuration values are missing: ${missing[*]}"
             exit 1
           fi
 
-          TARGET_OWNER="${TARGET_REPO%%/*}"
-          TARGET_NAME="${TARGET_REPO#*/}"
-
-          if [[ "$TARGET_OWNER" == "$TARGET_REPO" || -z "$TARGET_NAME" ]]; then
+          # Require exactly owner/repository format.
+          if [[ ! "$TARGET_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
             echo "::error::target_repo must be in owner/repo format."
             exit 1
           fi
+
+          TARGET_OWNER="${TARGET_REPO%%/*}"
+          TARGET_NAME="${TARGET_REPO#*/}"
 
           if [[ "$TARGET_OWNER" != "$EXPECTED_OWNER" ]]; then
             echo "::error::Target repository must belong to organization '$EXPECTED_OWNER'."
             exit 1
           fi
 
-          echo "Preflight passed."
+          # Make these available to later steps.
+          echo "target_owner=$TARGET_OWNER" >> "$GITHUB_OUTPUT"
+          echo "target_name=$TARGET_NAME" >> "$GITHUB_OUTPUT"
 
-      # Generate a short-lived GitHub App installation token.
-      # The token is restricted to only the target repository.
+          echo "Preflight passed."
+          echo "Target owner: $TARGET_OWNER"
+          echo "Target repository: $TARGET_NAME"
+
+      # ------------------------------------------------------------
+      # Generate short-lived GitHub App installation token
+      #
+      # This token is:
+      #   - for the slick-ge GitHub App installation
+      #   - restricted to the requested repository
+      #   - restricted to repository Secrets permission
+      # ------------------------------------------------------------
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@v3
         with:
-          client-id: ${{ vars.GH_PROVISIONER_APP_CLIENT_ID }}
+          client-id: ${{ secrets.GH_PROVISIONER_APP_CLIENT_ID }}
           private-key: ${{ secrets.GH_PROVISIONER_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ inputs.target_repo }}
+
+          owner: ${{ steps.preflight.outputs.target_owner }}
+
+          repositories: |
+            ${{ steps.preflight.outputs.target_name }}
+
           permission-secrets: write
 
+      # ------------------------------------------------------------
+      # Python environment
+      # ------------------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: custom-tooling/bws_secret_injector/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r custom-tooling/bws_secret_injector/requirements.txt
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r custom-tooling/bws_secret_injector/requirements.txt
 
-      # Copy BW_ACCESS_TOKEN from this repository into the target repository.
-      # GH_PAT is now a short-lived GitHub App installation token rather
-      # than a personal access token.
+      # ------------------------------------------------------------
+      # Inject BW_ACCESS_TOKEN into target repository
+      #
+      # GH_PAT is retained as the variable name so your existing
+      # inject_secret.py does not need to change yet.
+      #
+      # Despite the name, this is NOT a PAT anymore.
+      # It is a short-lived GitHub App installation token.
+      # ------------------------------------------------------------
       - name: Copy BW_ACCESS_TOKEN to target repo
         env:
           GH_PAT: ${{ steps.app-token.outputs.token }}
+
           TARGET_REPO: ${{ inputs.target_repo }}
+
           SECRET_NAME: "BW_ACCESS_TOKEN"
           SECRET_VALUE: ${{ secrets.BW_ACCESS_TOKEN }}
-        run: python custom-tooling/bws_secret_injector/inject_secret.py
 
+        run: |
+          python custom-tooling/bws_secret_injector/inject_secret.py
+
+      # ------------------------------------------------------------
+      # Workflow summary
+      # ------------------------------------------------------------
       - name: Summary
         if: success()
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
         run: |
-          echo "### Provisioning complete :white_check_mark:" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Target repo | \`${{ inputs.target_repo }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Secret copied | \`BW_ACCESS_TOKEN\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Authentication | GitHub App |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Provisioning complete :white_check_mark:"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Target repo | \`$TARGET_REPO\` |"
+            echo "| Secret copied | \`BW_ACCESS_TOKEN\` |"
+            echo "| Authentication | GitHub App |"
+            echo "| GitHub App repository scope | \`${{ steps.preflight.outputs.target_name }}\` |"
+            echo "| GitHub App permission | \`Secrets: write\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
